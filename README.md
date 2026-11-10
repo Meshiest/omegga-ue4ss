@@ -66,7 +66,7 @@ UE4SS generates on the server ([docs/lua-api.md](docs/lua-api.md#editor-completi
 | `bin/launch.sh` | starts the game with UE4SS when it's ready for that binary, without it otherwise |
 | `bin/run_ue4ss.sh` | the Linux port's preload launcher |
 | `src/` | the plugin (setup, signature checks, the socket client); this is all `setup.sh` builds |
-| `tools/` | dev CLIs: verify, acceptance, dumpq (not shipped) |
+| `tools/` | dev CLIs: verify, acceptance, dumpq, and `tag.sh` for `just tag` (not shipped) |
 | `test/` | unit tests |
 | `overlay/` | signatures, memory layouts and the settings template |
 | `mods/BrickadiaBridge/` | the bridge mod: Lua `exec`, plus the C++ half that owns the socket and the raw-call helpers |
@@ -93,9 +93,9 @@ but it means the signature in `overlay/UE4SS_Signatures/` is worth refreshing.
 
 CI (`.github/workflows/ci.yml`) runs the tests on every push. On a `v*` tag it builds the runtime
 and attaches it to the release. It needs a `GH_REPO_SSH` secret, because the Linux UEPseudo
-fork is Epic-gated. Tag `v<version>` matching package.json, since the default `runtimeUrl` uses
-that version. Signature checks against the game binary only run locally; the binary can't be
-redistributed.
+fork is Epic-gated. `just tag` tags the package.json version and pushes it, since the default
+`runtimeUrl` uses that version. Signature checks against the game binary only run locally; the
+binary can't be redistributed.
 
 ## Known gaps
 
