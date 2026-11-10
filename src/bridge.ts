@@ -29,7 +29,8 @@ type Incoming =
 export interface InteropHost {
   emit(event: string, data: unknown): Promise<void> | void;
   call(plugin: string, event: string, args: unknown[]): Promise<unknown>;
-  log(...args: unknown[]): void;
+  /** problems talking to the game */
+  warn(...args: unknown[]): void;
 }
 
 const BRIDGE_MOD = 'BrickadiaBridge';
@@ -125,11 +126,11 @@ export class Bridge {
       try {
         message = JSON.parse(line) as Incoming;
       } catch {
-        this.host?.log('dropping unreadable message from the game:', line.slice(0, 200));
+        this.host?.warn('dropping unreadable message from the game:', line.slice(0, 200));
         continue;
       }
       // an exception escaping here would reach omegga, which stops the server for it
-      this.#handle(message).catch(e => this.host?.log('error handling a message from the game:', e));
+      this.#handle(message).catch(e => this.host?.warn('error handling a message from the game:', e));
     }
   }
 

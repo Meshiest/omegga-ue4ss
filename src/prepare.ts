@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Elf } from './elf';
+import type { Log } from './log';
 import { formatReport, type SymbolReport, usable, verifySignatures, writeSignatures } from './verify';
 import { buildChangelist } from './version';
 import { checkVTables, parseVTableOffsets, type VTableCheck } from './vtables';
@@ -20,7 +21,7 @@ export interface PrepareOptions {
   runtimeUrl?: string;
   /** mod folders of other plugins to load as well (see Ue4ssPlugin.pluginModDirs) */
   extraModDirs?: string[];
-  log: (...args: unknown[]) => void;
+  log: Log;
 }
 
 export interface PrepareResult {
@@ -137,7 +138,7 @@ async function ensureRuntime(opts: PrepareOptions): Promise<string> {
     throw new Error(`runtime/ is missing ${missing().join(', ')} and no runtimeUrl is configured`);
 
   const url = opts.runtimeUrl.split('{version}').join(pluginVersion());
-  opts.log('Downloading UE4SS runtime from', url);
+  opts.log.info('Downloading UE4SS runtime from', url);
   fs.mkdirSync(dir, { recursive: true });
   const archive = path.join(dir, 'runtime.tar.gz');
   fs.writeFileSync(archive, await download(url));
@@ -221,7 +222,7 @@ export async function prepare(opts: PrepareOptions): Promise<PrepareResult> {
   if (cl !== null) fs.writeFileSync(path.join(dir, 'build-cl'), `${identity}\n${cl}\n`);
   else {
     fs.rmSync(path.join(dir, 'build-cl'), { force: true });
-    opts.log('could not read the game changelist; crash reports may be uploaded');
+    opts.log.warn('could not read the game changelist; crash reports may be uploaded');
   }
   const reports = verifySignatures(elf, path.join(overlay, 'UE4SS_Signatures'));
   writeSignatures(reports, path.join(overlay, 'UE4SS_Signatures'), path.join(dir, 'UE4SS_Signatures'));
@@ -233,7 +234,7 @@ export async function prepare(opts: PrepareOptions): Promise<PrepareResult> {
   const vtableText = vtables.map(v => `${v.ok ? 'verified' : 'FAILED  '}   ${v.name.padEnd(32)} 0x${v.offset.toString(16).padEnd(10)} ${v.note}`);
   fs.writeFileSync(path.join(dir, 'signatures.txt'), `${identity}\n${formatReport(reports)}\n${vtableText.join('\n')}\n`);
 
-  if (writeEditorConfig(opts.dataDir, opts.pluginDir)) opts.log('Wrote data/Mods/.luarc.json for Lua editor completion');
+  if (writeEditorConfig(opts.dataDir, opts.pluginDir)) opts.log.info('Wrote data/Mods/.luarc.json for Lua editor completion');
 
   if (!usable(reports)) return fail('a required signature is unresolved (see data/UE4SS/signatures.txt)', reports, vtables);
   if (vtables.length < 3 || vtables.some(v => !v.ok))

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { Bridge } from './bridge';
+import { log } from './log';
 import { gameTypesDir, gameTypesStamp, prepare, SOCKET_PATH_MAX, socketPath, ue4ssDir } from './prepare';
 
 interface OmeggaPlugin {
@@ -76,7 +77,7 @@ export default class Ue4ssPlugin {
         if (!target?.loaded) throw new Error(`plugin ${plugin} is not loaded`);
         return target.emitPlugin(event, ...args);
       },
-      log: (...args) => console.log('[ue4ss]', ...args),
+      warn: log.warn,
     });
   }
 
@@ -104,9 +105,8 @@ export default class Ue4ssPlugin {
   }
 
   async init() {
-    const log = (...args: unknown[]) => console.log('[ue4ss]', ...args);
     const extraModDirs = this.pluginModDirs();
-    if (extraModDirs.length) log('Loading UE4SS mods from', extraModDirs.join(', '));
+    if (extraModDirs.length) log.info('Loading UE4SS mods from', extraModDirs.join(', '));
     const result = await prepare({
       dataDir: this.omegga.dataPath,
       pluginDir: PLUGIN_DIR,
@@ -118,14 +118,14 @@ export default class Ue4ssPlugin {
     const counts = new Map<string, number>();
     for (const r of result.reports) counts.set(r.status, (counts.get(r.status) ?? 0) + 1);
     const summary = [...counts].map(([s, n]) => `${n} ${s}`).join(', ');
-    if (result.ready) log('UE4SS ready for the next game start:', summary);
-    else log('UE4SS disabled for the next game start:', result.reason, summary && `(${summary})`);
+    if (result.ready) log.info('UE4SS ready for the next game start:', summary);
+    else log.warn('UE4SS disabled for the next game start:', result.reason, summary && `(${summary})`);
     for (const r of result.reports.filter(r => r.status !== 'verified'))
-      log(`  ${r.status} ${r.symbol}: ${r.note}`);
-    for (const v of result.vtables.filter(v => !v.ok)) log(`  vtable ${v.name}: ${v.note}`);
+      log.warn(`  ${r.status} ${r.symbol}: ${r.note}`);
+    for (const v of result.vtables.filter(v => !v.ok)) log.warn(`  vtable ${v.name}: ${v.note}`);
     const sock = socketPath(this.omegga.dataPath);
     if (Buffer.byteLength(sock) > SOCKET_PATH_MAX)
-      log(`the bridge socket path is longer than ${SOCKET_PATH_MAX} bytes, so plugins can't reach Lua: ${sock}`);
+      log.warn(`the bridge socket path is longer than ${SOCKET_PATH_MAX} bytes, so plugins can't reach Lua: ${sock}`);
     // connects once the game is up, and again after every restart
     this.#bridge.start();
     this.omegga.on('mapchange', this.#onMap);
@@ -165,7 +165,7 @@ export default class Ue4ssPlugin {
 
   #onMap = () => {
     this.#generating ??= this.#generateTypes()
-      .catch(e => console.log('[ue4ss] could not generate Lua types:', e))
+      .catch(e => log.warn('could not generate Lua types:', e))
       .finally(() => (this.#generating = null));
   };
 
@@ -187,7 +187,7 @@ export default class Ue4ssPlugin {
       const reply = await this.#bridge.exec('GenerateLuaTypes()', 120_000);
       if (reply.ok) {
         fs.writeFileSync(stamp, identity);
-        console.log('[ue4ss] Generated Lua types for the game in', gameTypesDir(this.omegga.dataPath));
+        log.info('Generated Lua types for the game in', gameTypesDir(this.omegga.dataPath));
         return;
       }
       if (Date.now() > deadline) throw new Error(reply.error);

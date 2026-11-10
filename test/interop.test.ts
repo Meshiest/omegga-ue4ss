@@ -51,7 +51,7 @@ function recordingHost() {
       if (event === 'fail') throw new Error('nope');
       return (args as number[]).reduce((a, b) => a + b, 0);
     },
-    log: () => {},
+    warn: () => {},
   };
   return { host, seen };
 }
