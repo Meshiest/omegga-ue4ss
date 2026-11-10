@@ -94,8 +94,13 @@ function M.asset(name)
     return a
 end
 
+--- EBrickMaterial, for BR.builder's `material` option.
+M.MATERIAL = { Plastic = 0, Glass = 1, TranslucentPlastic = 2, Glow = 3, Metal = 4, Hologram = 5 }
+
 --- A BRLuauBuilder as raw bytes. opts: asset (name), size {x,y,z} (procedural
---- bricks only), color {r,g,b,a}, grid (actor), owner (brick owner index).
+--- bricks only), color {r,g,b,a}, material (a BR.MATERIAL name or number,
+--- default Plastic), alpha (material alpha, default 5), grid (actor), owner
+--- (brick owner index), visible, collision.
 function M.builder(opts)
     local lib = cdo("BRLuauBuilderLibrary")
     local self = string.rep("\0", layout(SCRIPT .. "BRLuauBuilderLibrary:SetAsset").Self.size)
@@ -111,7 +116,12 @@ function M.builder(opts)
     local c = opts.color or { 255, 255, 255, 255 }
     -- FColor is stored B, G, R, A
     set("SetColor", "NewColor", string.pack("BBBB", c[3], c[2], c[1], c[4]))
-    set("SetMaterialAlpha", "NewMaterialAlpha", string.pack("<i4", 5))
+    -- a builder that never had SetMaterial places bricks clients draw as
+    -- nothing (the server still reports them visible)
+    local material = opts.material or "Plastic"
+    if type(material) == "string" then material = assert(M.MATERIAL[material], "no material " .. material) end
+    set("SetMaterial", "NewMaterial", string.pack("B", material), ctx)
+    set("SetMaterialAlpha", "NewMaterialAlpha", string.pack("<i4", opts.alpha or 5))
     set("SetCollision", "NewChannels", string.pack("B", opts.collision == false and 0 or M.ALL_COLLISION))
     set("SetVisible", "bNewVisible", string.pack("B", opts.visible == false and 0 or 1))
     if opts.owner then set("SetOwnerId", "NewOwnerId", string.pack("<i4", opts.owner), ctx) end
@@ -684,6 +694,60 @@ function M.remove_text(ps, id) client(ps):ClientRemoveDisplayText(id) end
 
 function M.entities() return FindAllOf("BREntityActor") or {} end
 
+-- Entity tags: a WireString property `EntityTag` on entities (BREntityActor) and
+-- on dynamic brick grids (BrickGridDynamicActor), set in game from the entity's
+-- properties. Both classes put it at the same offset today; it is looked up by
+-- reflection rather than assumed.
+local tag_offsets = {}
+local function tag_offset(class_path)
+    if not tag_offsets[class_path] then
+        StaticFindObject(class_path):ForEachProperty(function(p)
+            if p:GetFName():ToString() == "EntityTag" then tag_offsets[class_path] = p:GetOffset_Internal() end
+        end)
+    end
+    return assert(tag_offsets[class_path], "no EntityTag on " .. class_path)
+end
+local TAGGED = { "/Script/Brickadia.BREntityActor", "/Script/Brickadia.BrickGridDynamicActor" }
+
+local function tag_class(actor)
+    for _, path in ipairs(TAGGED) do
+        if actor:IsA(StaticFindObject(path)) then return path end
+    end
+end
+
+--- An entity's or dynamic grid's tag, or nil when it has none.
+function M.entity_tag(actor)
+    local path = tag_class(actor)
+    if not path then return nil end
+    -- the WireString's first word points at {TArray<char> text with NUL, hash}
+    local obj = string.unpack("<I8", __peek(__addr(actor) + tag_offset(path), 8))
+    if obj == 0 then return nil end
+    local data, num = string.unpack("<I8i4", __peek(obj, 12))
+    if data == 0 or num <= 1 then return nil end
+    return __peek(data, num - 1)
+end
+
+--- Set an entity's or dynamic grid's tag.
+function M.set_entity_tag(actor, text)
+    local path = assert(tag_class(actor), "not an entity or dynamic grid")
+    local class = path:match("%.(%w+)$")
+    M.call(actor, class, "SetEntityTag", { Tag = wirestring(text) })
+end
+
+--- Entities and dynamic grids whose tag is `tag` (all tagged ones when nil).
+function M.find_entities(tag)
+    local out = {}
+    for _, path in ipairs(TAGGED) do
+        for _, a in ipairs(FindAllOf(path:match("%.(%w+)$")) or {}) do
+            if a:IsValid() then
+                local t = M.entity_tag(a)
+                if t and (tag == nil or t == tag) then out[#out + 1] = a end
+            end
+        end
+    end
+    return out
+end
+
 local function entity_lib(fn, ...) return cdo("BRLuauEntityLibrary")[fn](cdo("BRLuauEntityLibrary"), ...) end
 
 --- Spawn an entity of `class` (a UClass, e.g. /Game/Entities/Entity_Ball.Entity_Ball_C)
@@ -1136,6 +1200,14 @@ function M.on_interact_end(fn)
     return M.on("interact_end", function(_, info) fn(info.character) end)
 end
 
+--- Call fn(player, manager) when a player saves an avatar in the editor.
+--- `manager` is their BRPlayerAvatarManagerComponent. The change goes through
+--- regardless; to enforce a look (team uniforms), set it again on a later tick.
+--- Returns a function that stops it.
+function M.on_avatar_change(fn)
+    return M.on("avatar", function(player, info) fn(player, info.manager) end)
+end
+
 --- Interact with a brick as `character`, as if its player clicked it (a button
 --- stays held until BR.stop_interact).
 function M.interact(character, brick, nearby)
@@ -1186,6 +1258,35 @@ end
 local function fstring_at(params, offset) return M.fstring(params:sub(offset + 1, offset + 16)) end
 local function name_of(o) return o and o:IsValid() and o:GetFName():ToString() or nil end
 local function ivec_at(params, offset) return { string.unpack("<i4i4i4", params, offset + 1) } end
+local function vec_at(params, offset) return { string.unpack("<ddd", params, offset + 1) } end
+local function fname_at(params, offset)
+    local s = M.fstring(M.call(StaticFindObject("/Script/Engine.Default__KismetStringLibrary"), "Engine.KismetStringLibrary",
+        "Conv_NameToString", { InName = params:sub(offset + 1, offset + 8) }).ReturnValue)
+    return s ~= "None" and s or nil
+end
+
+-- What a projectile stopped against. FHitResult names the actor only through a
+-- weak handle Lua can't resolve, so a brick or entity is found by tracing a few
+-- units into the surface, and a character from the bone it hit plus being the
+-- nearest one to the point.
+local function projectile_target(pos, normal, bone)
+    if bone then
+        local best, best_d
+        for _, ch in ipairs(FindAllOf("BRCharacter") or {}) do
+            if ch:IsValid() then
+                local l = ch:K2_GetActorLocation()
+                local d = (l.X - pos[1]) ^ 2 + (l.Y - pos[2]) ^ 2 + (l.Z - pos[3]) ^ 2
+                if not best_d or d < best_d then best, best_d = ch, d end
+            end
+        end
+        if best and best_d < 300 ^ 2 then return { character = best, player = M.player_of(best) } end
+    end
+    local from = { pos[1] + normal[1] * 4, pos[2] + normal[2] * 4, pos[3] + normal[3] * 4 }
+    local hit = M.raycast(from, { -normal[1], -normal[2], -normal[3] }, { distance = 12 })
+    if hit and hit.brick then return { brick = hit.brick } end
+    if hit and hit.entity then return { entity = hit.entity } end
+    return {}
+end
 
 -- event -> list of { UFunction path, decode(self, params) -> player, info }
 local EVENTS = {
@@ -1226,6 +1327,21 @@ local EVENTS = {
     end } },
     interact_end = { { SCRIPT .. "BRCharacter:ServerStopAnyInteract", function(self)
         return M.player_of(self), { character = self }
+    end } },
+    -- a player saving their avatar in the editor; the change can't be refused
+    -- here, but the manager can be given another avatar on the next tick
+    avatar = { { SCRIPT .. "BRPlayerAvatarManagerComponent:ServerUpdatePlayerAvatar", function(self)
+        return M.player_of(self), { manager = self }
+    end } },
+    -- a projectile stopping against something: the hit result is the whole
+    -- parameter block (Location 0x10, ImpactPoint 0x28, ImpactNormal 0x58,
+    -- BoneName 0xE0); bounces don't count
+    projectile_hit = { { SCRIPT .. "BRWeaponProjectile:ProcessStop", function(self, p)
+        local pos, normal, bone = vec_at(p, 0x28), vec_at(p, 0x58), fname_at(p, 0xE0)
+        local info = { projectile = name_of(self:GetClass()), position = pos, normal = normal, bone = bone }
+        for k, v in pairs(projectile_target(pos, normal, bone)) do info[k] = v end
+        local by = self.InstigatorState
+        return (by and by:IsValid()) and by or M.player_of(self), info
     end } },
     shoot = { { SCRIPT .. "BRWeaponBase:MulticastReplicateAcceleratedProjectiles", function(self)
         return M.player_of(self), { weapon = name_of(self:GetClass()) }
@@ -1275,7 +1391,7 @@ local handlers = {}
 
 --- Call fn(player, info) when a player does `event` (BR.EVENTS lists them):
 --- join, leave, chat, typing, death, damage, emote, emote_end, interact,
---- interact_end, shoot, place, delete, change. `player` is their PlayerState
+--- interact_end, shoot, projectile_hit, avatar, place, delete, change. `player` is their PlayerState
 --- (nil for bots); `info` holds the event's details (docs/lua-api.md). Handlers
 --- run on the game thread before the game handles the action, so a brick being
 --- deleted can still be read. Returns a function that stops it.

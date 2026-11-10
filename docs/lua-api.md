@@ -69,7 +69,8 @@ These raise a Lua error instead of returning an invalid object.
 | | |
 |--|--|
 | `BR.asset(name)` | a brick asset by name: `"PB_DefaultBrick"`, `"B_Bot_Spawn_Point"`, `"B_1x1_Gate_Expr_LogicalAND"` |
-| `BR.builder(opts)` | builder bytes. `opts`: `asset`, `size = {x, y, z}` (procedural bricks; half-extents in brick units), `color = {r, g, b, a}`, `grid`, `owner` (brick owner index), `visible = false`, `collision = false` |
+| `BR.builder(opts)` | builder bytes. `opts`: `asset`, `size = {x, y, z}` (procedural bricks; half-extents in brick units), `color = {r, g, b, a}`, `material` (a `BR.MATERIAL` name such as `"Glass"`, or its number; default `"Plastic"`), `alpha` (default 5), `grid`, `owner` (brick owner index), `visible = false`, `collision = false` |
+| `BR.MATERIAL` | `Plastic`, `Glass`, `TranslucentPlastic`, `Glow`, `Metal`, `Hologram` (`EBrickMaterial`) |
 | `BR.place(builder, x, y, z, orientation?)` | handle, or nil when refused. Immediate, no trust check, no undo. `orientation` defaults to `BR.Z_UP` |
 | `BR.brick_info(handle)` | `{ valid, asset, position = {x, y, z} }`, or `{ valid = false }` |
 | `BR.brick_valid(handle)` | whether the handle names a live brick |
@@ -332,13 +333,15 @@ game handles the action, so a brick about to be deleted can still be read.
 | `damage` | `character`, `damage` | `BRCharacter:MulticastPlayPainSound` | no (no damage on the test map) |
 | `emote`, `emote_end` | `character`, `emote` (class name) | `BRCharacter:ServerStartEmoting` / `ServerStopEmoting` | no |
 | `interact`, `interact_end` | `character`, `brick`, `nearby` | `BRCharacter:ServerMaybeStartInteract` / `ServerStopAnyInteract` | yes |
-| `shoot` | `weapon` (class name) | `BRWeaponBase:MulticastReplicateAcceleratedProjectiles(WithSeed)` | no; projectile weapons only |
+| `shoot` | `weapon` (class name) | `BRWeaponBase:MulticastReplicateAcceleratedProjectiles(WithSeed)` | yes, with real players; projectile weapons only |
+| `avatar` | `manager` (their `BRPlayerAvatarManagerComponent`) | `BRPlayerAvatarManagerComponent:ServerUpdatePlayerAvatar` | yes, with real players |
+| `projectile_hit` | `projectile` (class name), `position`, `normal`, `bone` (name or nil), then one of `brick`, `entity`, `character` + `player`, or none (the map) | `BRWeaponProjectile:ProcessStop` | fires for real players' shots; the target detection isn't checked yet. Bounces don't fire it |
 | `place` | `kind` (`brick`, `entity`, `prefab`), `position`, `orientation`, `color` / `entity` | `BRTool_Placer:ServerPlaceSimpleBrickVolume`, `...EntityVolume`, `ServerPlaceCurrentPrefab` | no (needs a client's tools) |
 | `delete` | `kind` (`hammer`, `placer`, `selection`), `brick` | `BRTool_Hammer:ServerHammerBrick`, `BRPlacerControlMode_Delete:ServerHammerBrick`, `BRTool_Selector:ServerDeleteSelection` | no |
 | `change` | `kind` (`paint`, `fill`, `apply`, `paste`, `reset`, `remove_component`, `resize`, `rotate`, `direction`), `brick` | painter, applicator and resizer tool RPCs | no |
 
-"Tested" means the hook fired with the right player and details when the action was done by a
-spawned stand-in character (a chat message, a death, a button press). The untested ones hook
+"Tested" means the hook fired with the right player and details, either for real players on a
+live server or for a spawned stand-in character (a chat message, a death, a button press). The untested ones hook
 the RPC a real client sends; the payload offsets come from reflection, but they haven't seen a
 real call yet. Reload and voice have no server-side RPC (weapon state replicates as a
 property, and voice doesn't pass through UFunctions on the server), so they aren't events.
@@ -361,13 +364,61 @@ Shortcuts for interactions:
 | | |
 |--|--|
 | `BR.on_interact(fn)` / `BR.on_interact_end(fn)` | `fn(character, brick, nearby)` / `fn(character)` |
+| `BR.on_avatar_change(fn)` | `fn(player, manager)` when a player saves an avatar; the save can't be refused, so to enforce a uniform, set it again on a later tick |
 | `BR.interact(character, brick, nearby?)` / `BR.stop_interact(character)` | press a brick as that character |
 | `BR.on_call(path, fn)` | `fn(self, params)` before every call of a UFunction, with raw parameter bytes |
 
 `on_call` sees calls that go through ProcessEvent, which includes every RPC a client sends and
 every Blueprint event, but not native C++ calling C++.
 
+`projectile_hit` reports the player who fired (`InstigatorState`). The hit result names the struck
+actor only through a weak handle Lua can't resolve, so the target is worked out: a hit with a bone
+name is the nearest character, otherwise a short trace into the surface finds a brick or entity.
+
+A pistol that builds where it hits, in the shooter's paint (see [Players and teams](#players-and-teams)
+for the paint selection):
+
+```lua
+BR.on("projectile_hit", function(player, info)
+    if not player or info.character then return end
+    local p, n = info.position, info.normal
+    local x = math.floor((p[1] + n[1] * 5) / 10) * 10 + 5
+    local y = math.floor((p[2] + n[2] * 5) / 10) * 10 + 5
+    local z = math.floor((p[3] + n[3] * 6 - 6) / 4 + 0.5) * 4 + 6
+    local owner = FindFirstOf("BRGameStateBase"):IdOrRegisterBrickOwner(BR.controller(player))
+    BR.place(BR.builder({ size = { 5, 5, 6 }, owner = owner }), x, y, z)
+end)
+```
+
 ## Players and teams
+
+Recipes found on a live server, by hand rather than as helpers yet:
+
+```lua
+-- size: a replicated float; OnRep applies it on the server too (collision follows)
+ch.CharacterScale = 2.0
+ch:OnRep_CharacterScale()
+ch:ForceNetUpdate()
+
+-- a character with no AI: spawn the figure class with no controller; it stands where it is put
+local npc = BR.spawn(BR.character(ps):GetClass())
+npc:K2_SetActorLocation({ X = x, Y = y, Z = z }, false, {}, true)
+npc.BotName = FText("Claude"); npc:UpdateNametag()
+-- turn it with K2_SetActorRotation each tick; a player can take it over:
+local pc = BR.controller(ps); pc:UnPossess(); pc:Possess(npc)   -- the old body stays behind
+
+-- a player's paint selection; MaterialIndex is the server's material list index, not
+-- BR.MATERIAL, so apply it to a placed brick separately
+local sel = ps.ColorSelectionState          -- SelectedColor {R,G,B,A}, MaterialIndex, MaterialAlpha
+StaticFindObject("/Script/Brickadia.Default__BrickInstanceStatics"):SetMaterialIndex(
+    { Index = string.unpack("<i4", h, 1), Generation = string.unpack("<i4", h, 5) }, sel.MaterialIndex, BR.world_context())
+```
+
+`FindFirstOf("BRGameInstance"):IsMaterialIndexUsableForPainting(i)` filters out indexes a player
+can't paint with. Avatars live in `UBRPlayerAvatarManagerComponent.CustomizedAvatar` (set with
+`UpdatePlayerAvatar`), and `ABRCharacter:BuildAvatarCustomizationFromPlayerParts()` reads one off
+any character; copying one this way is untested. Chat accepts rich text markup, for example
+`<color="d97757"><b>[Claude]</></>`.
 
 Players are PlayerStates (`ps`). Tested on Release-EA3-CL-16507 with a spawned controller that has a character
 (see [internals](brickadia-internals.md#players-and-characters)); a real client's name and id

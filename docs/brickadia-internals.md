@@ -295,6 +295,33 @@ Channel 0 or targets 0 hit nothing, which is why earlier zeroed attempts missed.
 `BRLuauTraceHit` (0x48): Entity `+0`, Brick `+8`, Position `+0x10`, Normal `+0x28`, Distance
 `+0x40`.
 
+## Found on a live server
+
+- **The stand-in's owner entry has an all-zero GUID** and a blank name, which is what players see
+  as the owner of bricks placed with `BR.owner_index()`. Deleting them in a transaction run by
+  the stand-in reports `BricksBlocked`; the same transaction run by a real player (the server
+  owner) deletes them. Registering a named owner with
+  `ABRGameStateBase:IdOrRegisterBrickOwner_NotPresent({ OwnerGuid, OwnerName, OwnerDisplayName })`
+  works and is idempotent per GUID, but the stand-in can't edit bricks owned by it either.
+  `IdOrRegisterBrickOwner(pc)` gives a real player's own owner index, so bricks placed with it show
+  their name and they can hammer them.
+- **The stand-in counts as a player.** Its controller has a PlayerState, so the server's player
+  count (and the server list) is one higher than the real players.
+- **A builder needs `SetMaterial`.** Bricks from a builder that never had it are reported visible
+  by the server but drawn as nothing by clients; `BR.builder` always sets one.
+- **Procedural bricks have a size limit.** A half-extent of 80 (16 studs) placed; 90 was refused.
+  The exact limit wasn't pinned down.
+- **`BRLuauGridLibrary:InBox(grid, min, max, maxResults)`** lists the bricks in a box. Its
+  `TArray<FBrickHandle>` return is read raw: `{data, num}`, 8 bytes per handle.
+  `BrickInstanceStatics:GetBrickOwnerData(world, handle)` returns `FBrickOwnerData`
+  (GUID at 0, name FString at 0x10, display name at 0x20).
+- **Projectile impacts** reach ProcessEvent through `BRWeaponProjectile:ProcessStop(FHitResult)`,
+  even for weapons whose shots replicate as accelerated projectiles. `FHitResult` offsets:
+  Location 0x10, ImpactPoint 0x28, Normal 0x40, ImpactNormal 0x58, TraceStart 0x70,
+  TraceEnd 0x88, HitObjectHandle 0xB8, BoneName 0xE0.
+- **Compare UObjects by address.** Two UE4SS wrappers of the same object can compare unequal
+  with `==`; use `__addr(a) == __addr(b)`.
+
 ## Engine layout facts (Linux)
 
 | Fact | Value |

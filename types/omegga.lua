@@ -24,6 +24,7 @@
 ---@alias Bytes string
 ---@alias Vec3 number[]
 ---@alias Color number[]
+---@alias BrickMaterial "Plastic"|"Glass"|"TranslucentPlastic"|"Glow"|"Metal"|"Hologram"
 ---a component type: its object, or a name for BR.component_type
 ---@alias ComponentType UObject|string
 
@@ -39,6 +40,8 @@
 ---| "interact"
 ---| "interact_end"
 ---| "shoot"
+---| "projectile_hit"
+---| "avatar"
 ---| "place"
 ---| "delete"
 ---| "change"
@@ -90,6 +93,8 @@
 ---@field asset? string
 ---@field size? number[]
 ---@field color? Color
+---@field material? BrickMaterial|integer default "Plastic"
+---@field alpha? integer material alpha, default 5
 ---@field grid? UObject
 ---@field owner? integer
 ---@field visible? boolean
@@ -199,6 +204,7 @@
 ---@field global_grid fun(): UObject
 ---@field game_mode fun(): UObject
 ---@field Z_UP integer
+---@field MATERIAL table<BrickMaterial, integer>
 ---@field ALL_COLLISION integer
 ---@field asset fun(name: string): UObject
 ---@field builder fun(opts?: BuilderOptions): Builder
@@ -240,6 +246,7 @@
 ---@field on_call fun(path: string, fn: fun(self: UObject, params: Bytes))
 ---@field on_interact fun(fn: fun(character: UObject, brick: BrickHandle, nearby: boolean)): fun()
 ---@field on_interact_end fun(fn: fun(character: UObject)): fun()
+---@field on_avatar_change fun(fn: fun(player: UObject?, manager: UObject)): fun()
 ---@field on fun(event: PlayerEvent, fn: fun(player: UObject?, info: table<string, any>)): fun()
 ---@field EVENTS PlayerEvent[]
 ---@field player_of fun(obj?: UObject): UObject?
