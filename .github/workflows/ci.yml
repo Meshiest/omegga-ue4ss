@@ -1,0 +1,54 @@
+# Tests on every push; on a v* tag, builds the UE4SS runtime and attaches
+# release/ue4ss-runtime-linux-x64.tar.gz to that tag's release, which is what
+# the plugin's default runtimeUrl downloads.
+#
+# Secrets:
+#   GH_REPO_SSH  a key that can read github.com/tc-imba/UEPseudo (an account
+#                with Epic's GitHub link); GITHUB_TOKEN can't read other
+#                repositories
+#
+# The signature checks need the game binary, which can't live in CI; run
+# `GAME_BINARY=... npm test` locally after a game update.
+name: ci
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --no-audit --no-fund
+      - run: npm test
+
+  runtime:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang lld python3-venv
+      - name: SSH for UEPseudo
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.GH_REPO_SSH }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+      - run: native/build.sh
+      - name: Attach to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "$TAG" --notes ""
+          gh release upload "$TAG" release/ue4ss-runtime-linux-x64.tar.gz --clobber

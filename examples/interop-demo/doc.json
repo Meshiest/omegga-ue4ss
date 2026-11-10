@@ -1,0 +1,7 @@
+{
+  "name": "ue4ss-interop-demo",
+  "description": "Example of talking to UE4SS Lua through the ue4ss plugin",
+  "author": "cake",
+  "config": {},
+  "commands": []
+}

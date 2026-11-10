@@ -1,0 +1,8 @@
+node_modules/
+dist/
+build/
+runtime/
+release/
+mods/*/dlls/
+native/work/
+native/build.log

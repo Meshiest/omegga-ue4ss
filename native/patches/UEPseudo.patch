@@ -1,0 +1,112 @@
+diff --git a/include/Unreal/NameTypes.hpp b/include/Unreal/NameTypes.hpp
+index 5c8ea29..b288c91 100644
+--- a/include/Unreal/NameTypes.hpp
++++ b/include/Unreal/NameTypes.hpp
+@@ -227,6 +227,13 @@ namespace RC::Unreal
+         static UObject* KismetStringLibraryCDO;
+ #if PLATFORM_LINUX
+         static Function<void(FName*, const CharType*, EFindName)> ConstructorInternal;
++        /**
++         * Set when ConstructorInternal points at FNameHelper::MakeDetectNumber
++         * (UnrealInitializer::FNameConstructorABI::StringView) rather than a real
++         * FName(const TCHAR*, EFindName). Builds that inline the constructor everywhere
++         * only leave the helper callable.
++         */
++        static bool bConstructorTakesStringView;
+ #else
+         static Function<FName(const CharType*, EFindName)> ConstructorInternal;
+ #endif
+@@ -240,7 +247,31 @@ namespace RC::Unreal
+             if (FunctionAddressOverride) { ConstructorInternal.assign_temp_address(FunctionAddressOverride); }
+ 
+ #if PLATFORM_LINUX
+-            ConstructorInternal(this, StrName, FindType);
++            if (bConstructorTakesStringView)
++            {
++                // MakeDetectNumber takes an FNameStringView split across two registers:
++                // the chars, then Len | (bIsWide << 32), where bIsWide means some char is
++                // above 0x7F. The 8-byte FName {ComparisonIndex, Number} returns in rax.
++                uint64 Len = 0;
++                uint32 AllBits = 0;
++                for (const CharType* Char = StrName; *Char; ++Char)
++                {
++                    AllBits |= static_cast<uint16>(*Char);
++                    ++Len;
++                }
++                const uint64 LenAndWide = Len | (static_cast<uint64>(AllBits > 0x7F) << 32);
++                // The Function wrapper is typed for the constructor ABI; this ABI has a
++                // different signature, so the raw address is reinterpreted once here.
++                using MakeDetectNumberType = uint64 (*)(const CharType*, uint64, EFindName);
++                const auto MakeDetectNumber = reinterpret_cast<MakeDetectNumberType>(ConstructorInternal.get_function_address());
++                const uint64 Packed = MakeDetectNumber(StrName, LenAndWide, FindType);
++                ComparisonIndex = FNameEntryId::FromUnstableInt(static_cast<uint32>(Packed));
++                Number = static_cast<uint32>(Packed >> 32);
++            }
++            else
++            {
++                ConstructorInternal(this, StrName, FindType);
++            }
+ #else
+             FName Name = ConstructorInternal(StrName, FindType);
+             ComparisonIndex = Name.ComparisonIndex;
+diff --git a/include/Unreal/UnrealInitializer.hpp b/include/Unreal/UnrealInitializer.hpp
+index 6200065..1cc28aa 100644
+--- a/include/Unreal/UnrealInitializer.hpp
++++ b/include/Unreal/UnrealInitializer.hpp
+@@ -40,6 +40,13 @@ namespace RC::Unreal::UnrealInitializer
+         Conv_NameToString,    // Use KismetStringLibrary::Conv_NameToString (no fallback)
+     };
+ 
++    // Calling convention of the address FName_Constructor resolves to
++    enum class FNameConstructorABI
++    {
++        Constructor, // FName::FName(const TCHAR*, EFindName)
++        StringView,  // FNameHelper::MakeDetectNumber(FNameStringView, EFindName), Linux only
++    };
++
+     struct ScanOverrides
+     {
+         std::function<void(std::vector<SignatureContainer>&, Signatures::ScanResult&)> guobjectarray;
+@@ -105,6 +112,7 @@ namespace RC::Unreal::UnrealInitializer
+ 
+         bool bIsForcedPreScan{false};
+         FNameToStringMethod FNameToStringMethod{FNameToStringMethod::Scan};
++        FNameConstructorABI FNameConstructorABI{FNameConstructorABI::Constructor};
+     };
+ 
+     struct CacheInfo
+diff --git a/src/NameTypes.cpp b/src/NameTypes.cpp
+index 9f3488c..1fd67c6 100644
+--- a/src/NameTypes.cpp
++++ b/src/NameTypes.cpp
+@@ -13,6 +13,7 @@ namespace RC::Unreal
+     UObject* FName::KismetStringLibraryCDO{};
+ #if PLATFORM_LINUX
+     Function<void(FName*, const CharType*, EFindName)> FName::ConstructorInternal;
++    bool FName::bConstructorTakesStringView{};
+ #else
+     Function<FName(const CharType*, EFindName)> FName::ConstructorInternal;
+ #endif
+diff --git a/src/UnrealInitializer.cpp b/src/UnrealInitializer.cpp
+index 8a0359c..f67b2d0 100644
+--- a/src/UnrealInitializer.cpp
++++ b/src/UnrealInitializer.cpp
+@@ -635,6 +635,18 @@ namespace RC::Unreal::UnrealInitializer
+ 
+     auto VerifyFNameConstructor(void* AddressOverride) -> void
+     {
++#if PLATFORM_LINUX
++        // The verification detour is typed for the constructor ABI and would drop the
++        // FName that MakeDetectNumber returns in rax for every name made while hooked.
++        // The helper initialises the name pool itself, so it is safe to call this early.
++        if (StaticStorage::GlobalConfig.FNameConstructorABI == FNameConstructorABI::StringView)
++        {
++            FName::bConstructorTakesStringView = true;
++            StaticStorage::FNameVerificationStatus.store(true, std::memory_order_release);
++            Output::send(STR("FName constructor uses the StringView ABI, skipping hook verification\n"));
++            return;
++        }
++#endif
+         if (AddressOverride)
+         {
+             FName::ConstructorInternal.assign_temp_address(AddressOverride);

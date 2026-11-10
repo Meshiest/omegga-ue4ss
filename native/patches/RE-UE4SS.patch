@@ -1,0 +1,163 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 1282c1ad..32d17ea8 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -96,6 +96,14 @@ if(WIN32)
+     add_subdirectory("cppmods")
+ endif()
+ 
++# Out-of-tree C++ mods built against this tree's UE4SS target, e.g. a game-specific
++# bridge kept in another repository. A list of source directories.
++set(UE4SS_EXTRA_CPPMODS "" CACHE STRING "Extra C++ mod source directories")
++foreach(mod_dir ${UE4SS_EXTRA_CPPMODS})
++    get_filename_component(mod_name "${mod_dir}" NAME)
++    add_subdirectory("${mod_dir}" "${CMAKE_BINARY_DIR}/extra_cppmods/${mod_name}")
++endforeach()
++
+ option(UE4SS_BUILD_TESTS "Build native unit tests" OFF)
+ if(UE4SS_BUILD_TESTS)
+     enable_testing()
+diff --git a/UE4SS/include/SettingsManager.hpp b/UE4SS/include/SettingsManager.hpp
+index b6075d34..9276a9a6 100644
+--- a/UE4SS/include/SettingsManager.hpp
++++ b/UE4SS/include/SettingsManager.hpp
+@@ -44,6 +44,7 @@ namespace RC
+             bool SearchByAddress{false};
+             GameThreadExecutionMethod DefaultExecuteInGameThreadMethod{GameThreadExecutionMethod::EngineTick};
+             Unreal::UnrealInitializer::FNameToStringMethod DefaultFNameToStringMethod{Unreal::UnrealInitializer::FNameToStringMethod::Scan};
++            Unreal::UnrealInitializer::FNameConstructorABI FNameConstructorABI{Unreal::UnrealInitializer::FNameConstructorABI::Constructor};
+         } General;
+ 
+         struct SectionEngineVersionOverride
+diff --git a/UE4SS/src/Mod/LuaMod.cpp b/UE4SS/src/Mod/LuaMod.cpp
+index ec745c79..5212373e 100644
+--- a/UE4SS/src/Mod/LuaMod.cpp
++++ b/UE4SS/src/Mod/LuaMod.cpp
+@@ -1851,8 +1851,10 @@ Overloads:
+                 {
+                     lua.throw_error("Couldn't generate lua types because the pointer to 'Mod' was nullptr");
+                 }
+-                File::StringType working_dir{mod->m_program.get_working_directory()};
+-                UE4SSProgram::get_program().generate_lua_types(working_dir + STR("\\Mods\\shared\\types"));
++                // joined as a path: the upstream "\\Mods\\shared\\types" suffix names one
++                // oddly-named folder on Linux instead of three nested ones
++                UE4SSProgram::get_program().generate_lua_types(std::filesystem::path{mod->m_program.get_working_directory()} / STR("Mods") /
++                                                               STR("shared") / STR("types"));
+                 return 0;
+             });
+ 
+diff --git a/UE4SS/src/SettingsManager.cpp b/UE4SS/src/SettingsManager.cpp
+index 31e4fadd..cd24d29a 100644
+--- a/UE4SS/src/SettingsManager.cpp
++++ b/UE4SS/src/SettingsManager.cpp
+@@ -109,6 +109,12 @@ namespace RC
+         {
+             General.DefaultFNameToStringMethod = Unreal::UnrealInitializer::FNameToStringMethod::Conv_NameToString;
+         }
++        StringType fname_constructor_abi{};
++        REGISTER_STRING_SETTING(fname_constructor_abi, section_general, FNameConstructorABI)
++        if (String::iequal(fname_constructor_abi, STR("StringView")))
++        {
++            General.FNameConstructorABI = Unreal::UnrealInitializer::FNameConstructorABI::StringView;
++        }
+ 
+         constexpr static File::CharType section_engine_version_override[] = STR("EngineVersionOverride");
+         REGISTER_INT64_SETTING(EngineVersionOverride.MajorVersion, section_engine_version_override, MajorVersion)
+diff --git a/UE4SS/src/UE4SSProgram.cpp b/UE4SS/src/UE4SSProgram.cpp
+index 9bf0edbd..fb657454 100644
+--- a/UE4SS/src/UE4SSProgram.cpp
++++ b/UE4SS/src/UE4SSProgram.cpp
+@@ -53,6 +53,10 @@
+ #include <Unreal/Searcher/ObjectSearcher.hpp>
+ #include <Unreal/Core/Templates/Tuple.hpp>
+ #include <Unreal/UEngine.hpp>
++#include <Unreal/AActor.hpp>
++#include <Unreal/FOutputDevice.hpp>
++#include <Unreal/FProperty.hpp>
++#include <Unreal/UStruct.hpp>
+ #include <Unreal/TypeChecker.hpp>
+ #include <Unreal/UActorComponent.hpp>
+ #include <Unreal/UInterface.hpp>
+@@ -933,6 +937,53 @@ namespace RC
+             }
+         });
+ 
++#ifdef __linux__
++        // Exact Itanium vtable offsets, for engine forks whose virtuals don't line up with
++        // any MSVC-ordered layout plus the destructor shift. One `Class.Function = 0xOFFSET`
++        // per line; applied after VTableLayout.ini so they win. Values are true offsets;
++        // they are stored 8 lower because adjust_unreal_virtual_function_offset adds the
++        // second Itanium destructor slot back for anything past __vecDelDtor.
++        TRY([&]() {
++            const auto path = m_working_directory / STR("VTableOffsets.linux.ini");
++            if (!std::filesystem::exists(path)) { return; }
++            const std::unordered_map<std::string, std::unordered_map<File::StringType, uint32_t>*> maps{
++                    {"UObject", &Unreal::UObject::VTableLayoutMap},
++                    {"UEngine", &Unreal::UEngine::VTableLayoutMap},
++                    {"UStruct", &Unreal::UStruct::VTableLayoutMap},
++                    {"UField", &Unreal::UField::VTableLayoutMap},
++                    {"FField", &Unreal::FField::VTableLayoutMap},
++                    {"FProperty", &Unreal::FProperty::VTableLayoutMap},
++                    {"AActor", &Unreal::AActor::VTableLayoutMap},
++                    {"FOutputDevice", &Unreal::FOutputDevice::VTableLayoutMap},
++            };
++            std::ifstream in{path};
++            std::string line;
++            while (std::getline(in, line))
++            {
++                if (auto comment = line.find(';'); comment != std::string::npos) { line.erase(comment); }
++                const auto dot = line.find('.');
++                const auto eq = line.find('=');
++                if (dot == std::string::npos || eq == std::string::npos || dot > eq) { continue; }
++                auto trim = [](std::string v) {
++                    v.erase(0, v.find_first_not_of(" \t\r"));
++                    v.erase(v.find_last_not_of(" \t\r") + 1);
++                    return v;
++                };
++                const auto cls = trim(line.substr(0, dot));
++                const auto fn = trim(line.substr(dot + 1, eq - dot - 1));
++                const auto offset = static_cast<uint32_t>(std::stoul(trim(line.substr(eq + 1)), nullptr, 0));
++                const auto map = maps.find(cls);
++                if (map == maps.end() || offset < 0x10)
++                {
++                    Output::send<LogLevel::Warning>(STR("VTableOffsets.linux.ini: ignoring '{}'\n"), ensure_str(line));
++                    continue;
++                }
++                map->second->insert_or_assign(ensure_str(fn), offset - 8);
++                Output::send(STR("{}::{} = 0x{:X} (exact)\n"), ensure_str(cls), ensure_str(fn), offset);
++            }
++        });
++#endif
++
+         config.bHookProcessInternal = settings_manager.Hooks.HookProcessInternal;
+         config.bHookProcessLocalScriptFunction = settings_manager.Hooks.HookProcessLocalScriptFunction;
+         config.bHookLoadMap = settings_manager.Hooks.HookLoadMap;
+@@ -950,6 +1001,7 @@ namespace RC
+         config.bHookUStructLink = settings_manager.Hooks.HookUStructLink;
+         config.FExecVTableOffsetInLocalPlayer = settings_manager.Hooks.FExecVTableOffsetInLocalPlayer;
+         config.FNameToStringMethod = settings_manager.General.DefaultFNameToStringMethod;
++        config.FNameConstructorABI = settings_manager.General.FNameConstructorABI;
+         // Apply Debug Build setting from settings file only for now.
+         Unreal::Version::DebugBuild = settings_manager.EngineVersionOverride.DebugBuild;
+         Output::send<LogLevel::Warning>(STR("DebugGame Setting Enabled? {}\n"), Unreal::Version::DebugBuild);
+diff --git a/deps/first/Helpers/src/Time.cpp b/deps/first/Helpers/src/Time.cpp
+index 73b04d4f..d34eaf4b 100644
+--- a/deps/first/Helpers/src/Time.cpp
++++ b/deps/first/Helpers/src/Time.cpp
+@@ -35,7 +35,15 @@ namespace RC
+             try
+             {
+                 static const auto timezone = std::chrono::current_zone();
+-                const auto now = std::chrono::time_point_cast<std::chrono::system_clock::duration>(timezone->to_local(std::chrono::system_clock::now()));
++                const auto local = std::chrono::time_point_cast<std::chrono::system_clock::duration>(timezone->to_local(std::chrono::system_clock::now()));
++#ifdef __linux__
++                // fmt only formats local_t time points when it detects libstdc++'s
++                // tzdb support, which clang 18 + libstdc++ 13 don't advertise.
++                // Re-wrapping the wall-clock value as a sys_time prints the same digits.
++                const auto now = std::chrono::sys_time<std::chrono::system_clock::duration>{local.time_since_epoch()};
++#else
++                const auto now = local;
++#endif
+                 return fmt::vformat(fmt::detail::to_string_view(format), RC_STD_MAKE_FORMAT_ARGS(now));
+             }
+             catch (std::runtime_error&)

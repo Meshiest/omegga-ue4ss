@@ -1,0 +1,24 @@
+{
+  "name": "omegga-ue4ss",
+  "version": "0.1.0",
+  "private": true,
+  "description": "UE4SS for Brickadia Linux servers, as an omegga plugin",
+  "license": "CC0-1.0",
+  "main": "omegga.main.js",
+  "scripts": {
+    "build": "tsc -p .",
+    "build:dev": "tsc -p tsconfig.dev.json",
+    "verify": "npm run -s build:dev && node build/tools/verify-cli.js",
+    "acceptance": "npm run -s build:dev && node build/tools/acceptance.js",
+    "dumpq": "npm run -s build:dev && node build/tools/dumpq.js",
+    "test": "npm run -s build:dev && node --test \"build/test/*.test.js\""
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "~5.9.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Meshiest/omegga-ue4ss.git"
+  }
+}
