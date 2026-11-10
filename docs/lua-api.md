@@ -334,6 +334,7 @@ game handles the action, so a brick about to be deleted can still be read.
 | `emote`, `emote_end` | `character`, `emote` (class name) | `BRCharacter:ServerStartEmoting` / `ServerStopEmoting` | no |
 | `interact`, `interact_end` | `character`, `brick`, `nearby` | `BRCharacter:ServerMaybeStartInteract` / `ServerStopAnyInteract` | yes |
 | `shoot` | `weapon` (class name) | `BRWeaponBase:MulticastReplicateAcceleratedProjectiles(WithSeed)` | yes, with real players; projectile weapons only |
+| `melee_hit` | `weapon`, `position`, `damage`, `backstab`, `actor`, `brick`, and `character` + `player` when a player was hit | `BRWeaponBase:ServerApplyMeleePredictedDamage` | not yet |
 | `avatar` | `manager` (their `BRPlayerAvatarManagerComponent`) | `BRPlayerAvatarManagerComponent:ServerUpdatePlayerAvatar` | yes, with real players |
 | `projectile_hit` | `projectile` (class name), `position`, `normal`, `bone` (name or nil), then one of `brick`, `entity`, `character` + `player`, or none (the map) | `BRWeaponProjectile:ProcessStop` | fires for real players' shots; the target detection isn't checked yet. Bounces don't fire it |
 | `place` | `kind` (`brick`, `entity`, `prefab`), `position`, `orientation`, `color` / `entity` | `BRTool_Placer:ServerPlaceSimpleBrickVolume`, `...EntityVolume`, `ServerPlaceCurrentPrefab` | no (needs a client's tools) |

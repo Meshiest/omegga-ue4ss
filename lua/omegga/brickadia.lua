@@ -793,6 +793,8 @@ local LEAF = {
     FloatProperty = { 37, function(v) return string.pack("<f", v) end },
     DoubleProperty = { 38, function(v) return string.pack("<d", v) end },
     WireString = { 42, wirestring },
+    -- the component enums are all uint8-backed; written as their byte value
+    EnumProperty = { 30, function(v) return string.pack("<I1", math.tointeger(v)) end },
     -- a weak object reference, { object index, serial }: the payload BRPropertyValue
     -- uses for objects, built by the engine so the serial is right
     WeakObjectProperty = { 41, function(v)
@@ -866,7 +868,9 @@ local function field_tokens(struct, path, value)
 end
 
 --- Set fields of a brick's component: `values` maps field paths to values,
---- `{ GunSkill = 0.5, bActiveBot = false, BotName = "Bob", ["MoveTarget.X"] = 100 }`.
+--- `{ GunSkill = 0.5, bActiveBot = false, BotName = "Bob", ["MoveTarget.X"] = 100 }`;
+--- a struct field can also take a table of its fields (`Color = { R = 20, G = 20 }`),
+--- and an enum field takes its numeric value.
 --- Field types come from reflection, so numbers are converted to the field's own
 --- type (an integer field needs an integer). Raises a Lua error for an unknown
 --- field or a type it can't write; applies directly, without a transaction or
@@ -875,7 +879,17 @@ function M.set_component(handle, ctype, values)
     local t = type(ctype) == "string" and M.component_type(ctype) or ctype
     local struct = M.component_struct(t)
     local tokens = {}
-    for path, value in pairs(values) do
+    -- a table value for a struct field is its fields: Color = { R = 20 } is Color.R
+    local flat = {}
+    local function flatten(prefix, v)
+        if type(v) == "table" then
+            for k, inner in pairs(v) do flatten(prefix .. "." .. k, inner) end
+        else
+            flat[prefix] = v
+        end
+    end
+    for path, value in pairs(values) do flatten(path, value) end
+    for path, value in pairs(flat) do
         for _, tk in ipairs(field_tokens(struct, path, value)) do tokens[#tokens + 1] = tk end
     end
     if #tokens == 0 then return end
@@ -1328,6 +1342,17 @@ local EVENTS = {
     interact_end = { { SCRIPT .. "BRCharacter:ServerStopAnyInteract", function(self)
         return M.player_of(self), { character = self }
     end } },
+    -- a melee weapon's hit as the attacking client reports it: event struct with
+    -- HitLocation 0x08, HitActor 0x20, HitBrick 0x28, ClientDamage 0x30, backstab 0x34
+    melee_hit = { { SCRIPT .. "BRWeaponBase:ServerApplyMeleePredictedDamage", function(self, p)
+        local actor = object_at(p, 0x20)
+        local info = { weapon = name_of(self:GetClass()), position = vec_at(p, 0x08), damage = (string.unpack("<f", p, 0x31)),
+            backstab = p:byte(0x35) ~= 0, actor = actor, brick = brick_at(p, 0x28) }
+        if actor and actor:IsA(StaticFindObject(SCRIPT .. "BRCharacter")) then
+            info.character, info.player = actor, M.player_of(actor)
+        end
+        return M.player_of(self), info
+    end } },
     -- a player saving their avatar in the editor; the change can't be refused
     -- here, but the manager can be given another avatar on the next tick
     avatar = { { SCRIPT .. "BRPlayerAvatarManagerComponent:ServerUpdatePlayerAvatar", function(self)
@@ -1391,7 +1416,7 @@ local handlers = {}
 
 --- Call fn(player, info) when a player does `event` (BR.EVENTS lists them):
 --- join, leave, chat, typing, death, damage, emote, emote_end, interact,
---- interact_end, shoot, projectile_hit, avatar, place, delete, change. `player` is their PlayerState
+--- interact_end, shoot, projectile_hit, melee_hit, avatar, place, delete, change. `player` is their PlayerState
 --- (nil for bots); `info` holds the event's details (docs/lua-api.md). Handlers
 --- run on the game thread before the game handles the action, so a brick being
 --- deleted can still be read. Returns a function that stops it.

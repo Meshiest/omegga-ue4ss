@@ -42,6 +42,7 @@
 ---| "shoot"
 ---| "projectile_hit"
 ---| "avatar"
+---| "melee_hit"
 ---| "place"
 ---| "delete"
 ---| "change"
