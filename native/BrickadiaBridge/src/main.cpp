@@ -17,9 +17,12 @@
 //   __alloc(bytes)                 -> address of a copy of `bytes`, for params that
 //                                     point at memory (TArray data); __free it after
 //   __free(address)
-//   __game_alloc(bytes)            -> address of a copy of `bytes` in the game's own heap,
+//   __game_alloc(bytes)            -> address of a copy of `bytes` in the game's own heap (GMalloc),
 //                                     for memory the engine takes over and frees later
 //                                     (FString data, shared objects); never __free it
+//   __game_free(address)           frees __game_alloc memory, or a buffer an engine
+//                                     container owned, with the game's operator delete[]
+//   __poke(address, bytes)         writes bytes at an address (unmapped addresses crash)
 //   __bridge_listen(name, fn)      fn(conn, payload) gets every line sent to `name`
 //                                  (and "*" notices: connected/disconnected), on
 //                                  the game thread, at the start of the next tick
@@ -35,7 +38,6 @@
 // leak, which is acceptable for a test bridge and avoids double frees when Lua
 // copied a pointer out of it. Callers must be on the game thread.
 #include <algorithm>
-#include <dlfcn.h>
 #include <cstdlib>
 #include <cstring>
 #include <map>
@@ -48,6 +50,7 @@
 #include <LuaMadeSimple/LuaMadeSimple.hpp>
 #include <LuaType/LuaUObject.hpp>
 #include <Mod/CppUserModBase.hpp>
+#include <Unreal/Core/HAL/UnrealMemory.hpp>
 #include <Unreal/CoreUObject/UObject/Class.hpp>
 #include <Unreal/FProperty.hpp>
 #include <Unreal/UFunction.hpp>
@@ -140,24 +143,39 @@ namespace
         return 0;
     }
 
-    // The game exports operator new[] (FMemory underneath), and engine containers
-    // free with FMemory, so memory the engine will own must come from here, not
-    // from this mod's malloc. Looked up by name, so no build-specific address.
-    auto game_new() -> void* (*)(size_t)
-    {
-        static auto fn = reinterpret_cast<void* (*)(size_t)>(dlsym(RTLD_DEFAULT, "_Znam"));
-        return fn;
-    }
-
+    // Memory the engine will own (FString data, shared objects, container buffers)
+    // must come from its allocator, GMalloc, through UE4SS's FMemory. Looking up
+    // the game's operator new[] with dlsym is not enough: RTLD_DEFAULT finds the
+    // C++ runtime's copy first, which is plain malloc, and the engine's free
+    // aborts on such a block.
     auto lua_game_alloc(const LuaMadeSimple::Lua& lua) -> int
     {
         auto bytes = take_bytes(lua);
-        auto* alloc = game_new();
-        if (!alloc) lua.throw_error("__game_alloc: the game exports no operator new[]");
-        void* mem = alloc(std::max<size_t>(bytes.size(), 1));
+        void* mem = FMemory::Malloc(std::max<size_t>(bytes.size(), 1));
+        if (!mem) lua.throw_error("__game_alloc: GMalloc returned null");
         std::memcpy(mem, bytes.data(), bytes.size());
         lua.set_integer(static_cast<int64_t>(reinterpret_cast<uintptr_t>(mem)));
         return 1;
+    }
+
+    // Frees memory from __game_alloc, or a buffer an engine container owned (a
+    // TArray's data being replaced), through GMalloc.
+    auto lua_game_free(const LuaMadeSimple::Lua& lua) -> int
+    {
+        auto address = static_cast<uintptr_t>(lua.get_integer());
+        if (address) FMemory::Free(reinterpret_cast<void*>(address));
+        return 0;
+    }
+
+    // Writes bytes over engine memory the caller already holds a pointer to, for
+    // structs with no reflected fields (BRDynamicArray). Like __peek, an address
+    // that isn't mapped crashes the server.
+    auto lua_poke(const LuaMadeSimple::Lua& lua) -> int
+    {
+        auto address = static_cast<uintptr_t>(lua.get_integer());
+        auto bytes = take_bytes(lua);
+        std::memcpy(reinterpret_cast<void*>(address), bytes.data(), bytes.size());
+        return 0;
     }
 
     auto lua_raw_call(const LuaMadeSimple::Lua& lua) -> int
@@ -492,6 +510,8 @@ namespace
         lua.register_function("__alloc", lua_alloc);
         lua.register_function("__free", lua_free);
         lua.register_function("__game_alloc", lua_game_alloc);
+        lua.register_function("__game_free", lua_game_free);
+        lua.register_function("__poke", lua_poke);
         lua.register_function("__fn_layout", lua_fn_layout);
         lua.register_function("__raw_call", lua_raw_call);
         lua.register_function("__addr", lua_addr);

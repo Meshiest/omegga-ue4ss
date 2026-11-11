@@ -77,6 +77,7 @@ These raise a Lua error instead of returning an invalid object.
 | `BR.brick_id(handle)` | persistent id bytes, for transactions |
 | `BR.is_visible(handle)` | bool |
 | `BR.brick_count(grid?)` | number of bricks |
+| `BR.load_prefab(name, x, y, z, orientation?)` | load a prefab bundle (`Saved/Prefabs/<name>.brz`) into the world, added to what's there; returns the number of bricks added. See below |
 
 Brick helpers check the handle first and raise a Lua error for a dead one: the game's own
 brick functions abort the server on an invalid handle.
@@ -84,6 +85,20 @@ brick functions abort the server on an invalid handle.
 Positions are integer brick units, and sizes are half-extents: `size = {10, 10, 6}` with `z = 6`
 sits on the baseplate. Orientations: X+ 0..3, X- 4..7, Y+ 8..11, Y- 12..15,
 Z+ 16..19, Z- 20..23.
+
+### Loading many bricks at once
+
+`BR.place` costs about 70 ms for each fresh builder, so anything larger than a few hundred
+bricks belongs in a prefab: write a `.brz` (brs-js `World` + `makePrefab()` + `toBrz()`, or the
+brdb crate) into `Saved/Prefabs/` and load it with `BR.load_prefab`. Tested: 10,000 bricks load
+in about 20 ms, inside the call, with their owners taken from the file.
+
+- The prefab's bounds corner lands at `(x, y, z)` in world units.
+- `orientation` defaults to `BR.ORIENTATION_IDENTITY` (16, Z+ with no rotation). The console
+  command's own default, 0, is X+ facing and lays the whole prefab on its side.
+- Bricks that would overlap existing ones are skipped; the game logs
+  `Brick is overlapping in same grid (N)` under `LogBRWorldManager`.
+- Compiled wirescript (`.brz`) loads the same way.
 
 ### Recipes
 
@@ -202,7 +217,7 @@ button labels. Written with the engine's own property changelists
 | `BR.set_component(handle, type, values)` | set fields; `values` maps field paths to Lua values |
 | `BR.get_component(handle, type, path)` | read one field (`"GunSkill"`, `"MoveTarget.X"`) |
 | `BR.component_data(handle, type)` | every readable field as a table, or nil if the brick has no such component |
-| `BR.component_fields(type)` | `{ { name, type } }` for every field |
+| `BR.component_fields(type)` | `{ { name, type } }` for every field, inherited ones included (Interact's `PromptCustomLabel` comes from its base) |
 | `BR.component_struct(type)` | the component's data struct (a UScriptStruct) |
 | `BR.component_address(handle, type)` | where the data lives, for reading it raw |
 
@@ -244,6 +259,60 @@ print(d.GunSkill, d.BotName, d.MoveTarget.X)
 print(BR.get_component(gate, "BrickComponentType_Expr_LogicalAND", "bOutput"))   -- a gate's output
 ```
 
+### Array and map variables
+
+Array Variable and Map Variable gates hold their contents in structs with no reflected fields,
+so these read and write the memory directly
+([layouts](brickadia-internals.md#array-and-map-variables)). The element type is fixed by the
+gate, or by the circuit that declared the variable, and values are converted to it.
+
+| | |
+|--|--|
+| `BR.read_array(handle)` | the elements as a list, and the element type's name |
+| `BR.write_array(handle, values)` | replace the elements |
+| `BR.read_map(handle)` | the entries as `{ { key, value }, ... }`, and the key and value type names |
+| `BR.set_map_value(handle, key, value)` | change the value of an existing key; false if the key isn't there |
+| `BR.grid_bricks(grid?)` | every brick on a grid, to find gates inside a microchip |
+| `BR.on_var_changed(target, fn)` | `fn(value, handle)` when a Variable gate's value changes |
+| `BR.on_array_changed(target, fn)` | `fn(elements, handle)` when an Array Variable gate changes |
+| `BR.on_map_changed(target, fn)` | `fn(entries, handle)` when a Map Variable gate changes |
+
+Element types so far: `int` (Int64), `float` (Double) and `string` (WireString), for arrays and
+for map keys and values. Others raise an error naming the type.
+
+```lua
+-- a circuit's arrays, from its microchip grid
+local chip = FindAllOf("BP_MicrochipBrickGridDynamicActor_C")[1]
+for _, h in ipairs(BR.grid_bricks(chip)) do
+    if BR.component_address(h, "BrickComponentType_ArrayVar") then
+        local values, kind = BR.read_array(h)
+        if kind == "BRReflectionPropertyInfo_WireString" then
+            BR.write_array(h, { "alpha", "beta", "gamma" })
+        end
+    end
+end
+```
+
+`target` for the change events is a gate's handle, a list of handles, or a grid (every such gate
+on it at the time of the call, so a microchip's grid covers a whole circuit). Each returns a
+function that stops watching, and how many gates it watches. The game changes these values in
+native wire code that no hook sees, so each gate is checked once a tick (arrays and maps by a
+change counter, variables by their value bytes): changes within one tick arrive as one call
+with the latest contents, and Lua's own writes fire too.
+
+```lua
+local chip = FindAllOf("BP_MicrochipBrickGridDynamicActor_C")[1]
+local stop = BR.on_array_changed(chip, function(elements, handle)
+    print(#elements, "elements in", BR.brick_id(handle))
+end)
+```
+
+Gates read the new contents on their next run, and array gates keep working on them (a Push
+after `write_array` grows the array normally). Gates that react only to changes made through
+other array gates are not told. Map keys can't be added or removed here, because lookups go
+through a hash index; add keys with a Set gate. Replaced strings are not released, which leaks a
+few bytes each.
+
 ## Custom events
 
 Send Custom Event gates reach the receivers whose event name matches. Global events reach
@@ -264,7 +333,9 @@ entity (a brick grid: a contraption, vehicle or other dynamic grid).
 | `entity = grid` | | listen for events sent to that entity |
 
 Without `at`, BR finds free space high above a corner of the map. `ev.send(...)` takes up to 8
-wire values for `DataIn1..8`; send from a later call than the one that placed the sender.
+wire values for `DataIn1..8`; send from a later call than the one that placed the sender. Every
+send arrives: sends faster than the gate can fire wait in a queue and go out in order, a couple
+of ticks apart (`send` returns how many are waiting).
 `on_custom_event` hears senders built in game as well. `data` holds `DataOut1..8` as Lua values
 (unset slots read as 0), and `count` is how many times the event fired since the previous tick
 (with `data` from the latest). The handler runs on the game thread a tick or two after the
@@ -600,7 +671,9 @@ Under it are the native helpers every mod has (from the BrickadiaBridge C++ mod)
 | `__fname(text)` | an FName as an integer |
 | `__peek(addr, len)` | read memory |
 | `__alloc(bytes)` / `__free(addr)` | scratch memory the engine only reads during a call |
-| `__game_alloc(bytes)` | memory in the game's heap, for things the engine takes over and frees |
+| `__game_alloc(bytes)` | memory in the game's heap (GMalloc), for things the engine takes over and frees |
+| `__game_free(addr)` | free game-heap memory: `__game_alloc` blocks, or an engine container's old buffer |
+| `__poke(addr, bytes)` | write memory |
 | `__on_call(path, fn)` | raw ProcessEvent hook (`BR.on_call` wraps it) |
 | `__on_tick(fn)` | `fn(deltaSeconds)` every engine tick (`BR.on_tick` wraps it) |
 | `__component_data(handle)` | address of a component's data from its 8-byte handle, or nil |

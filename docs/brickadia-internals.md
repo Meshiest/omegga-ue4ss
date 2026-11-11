@@ -57,6 +57,9 @@ say, so it can't validate a ref.
 String 7, Enum 8, Object 9, Brick 10, Component 11, Exec 12, Float 13, ... (`/Script/Brickadia.EWireKind`).
 Bool, Integer and Double are a byte, int64 and double at `+0`. String (7) owns heap memory at
 `+0x08` and is freed by the engine, so it can't be faked from Lua bytes.
+Object (9) is a weak object pointer at `+0`: the object's index (the `InternalIndex` at `+0x0C`
+of the object) and its serial number, as int32s; serial numbers live in the engine's object
+array, so Lua can't build one yet.
 
 ## Transactions and trust
 
@@ -194,7 +197,10 @@ types come from reflection. Component data has no plain FString or FName fields:
 
 16 bytes: `{ object*, controller* }`, a `TSharedPtr` made with `MakeShared`, so the controller
 (`{ vtable, int32 shared, int32 weak }`) sits 0x10 bytes before the object in one 0x28-byte
-block from the game's `operator new[]` (`_Znam`, exported). The object is `{ TArray<char>
+block from the game's allocator (GMalloc). The game binary exports `operator new[]` and
+`delete[]`, but `dlsym(RTLD_DEFAULT)` from the mod finds the C++ runtime's copies first, which
+are plain `malloc`/`free`; `__game_alloc` and `__game_free` go through UE4SS's `FMemory`
+instead. The object is `{ TArray<char>
 text (UTF-8, NUL-terminated, num counts the NUL), uint32 hash, uint32 hashed }`; equality
 compares length and `strcmp`, and the hash fields start at zero. `BR.wirestring` builds one with
 `__game_alloc` and the controller vtable read off a WireString the game made
@@ -217,6 +223,26 @@ The storage object's address is build-specific, so the C++ mod finds it in the c
 `BRLuauComponentLibrary:GetType`, which loads it with `lea rsi, [rip + storage]; mov rdx,
 [rsi + rdx*8 + 0xC0]`. Fields are then read at the offsets reflection gives
 (`FProperty:GetOffset_Internal()`).
+
+## Array and map variables
+
+An Array Variable gate's `Value` is a `BRDynamicArray` (48 bytes, no reflected fields):
+`{ void* data, int32 num, int32 max, UBRReflectionPropertyInfo* element, ops*, ops*, int64
+element size }`. Elements are packed: Int64 and Double take 8 bytes, WireString 16. The info
+object's class names the element type (`BRReflectionPropertyInfo_Int64`, `_Double`,
+`_WireString`, ...); the two ops pointers are the same for every array of one type. The data
+buffer is engine-heap memory: a buffer from `__game_alloc` can replace it (free the old one
+with `__game_free`), and the engine grows it later with its own realloc.
+
+A Map Variable gate's `Value` is a `BRDynamicMap` (72 bytes): `{ data, int32 num, int32 max,
+key info*, value info*, hash index*, key ops*, value ops*, int32 key size, int32 entry size,
+int64 value size }`. Entries are packed `{ key, value }` pairs, the value at `+key size`.
+Lookups go through the hash index, whose layout isn't known yet, so keys can't be added or
+removed from outside; values can be rewritten in place. The WireString keys' own cached hashes
+(`+0x10` of the string object) are not what the index holds.
+
+Both gates have a `MutationVersion` counter after `Value`, which array and map gates bump on
+every change.
 
 ## Interactions and player events
 

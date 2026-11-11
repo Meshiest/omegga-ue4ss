@@ -189,7 +189,7 @@
 ---@class CustomEvent
 ---@field brick BrickHandle
 ---@field trigger Trigger
----@field send fun(...: WireValue): TransactionReport
+---@field send fun(...: WireValue): integer
 
 ---@class PortList
 ---@field inputs string[]
@@ -215,6 +215,9 @@
 ---@field brick_id fun(handle: BrickHandle): BrickId
 ---@field is_visible fun(handle: BrickHandle): boolean
 ---@field brick_count fun(grid?: UObject): integer
+---@field grid_bricks fun(grid?: UObject): BrickHandle[]
+---@field load_prefab fun(name: string, x: number, y: number, z: number, orientation?: integer): integer bricks added; loads Saved/Prefabs/<name>.brz additively, its bounds corner at (x, y, z)
+---@field ORIENTATION_IDENTITY integer 16: Z+ facing, no rotation
 ---@field component_types fun(): UObject[]
 ---@field component_type fun(name: string): UObject
 ---@field ports fun(componentType: string): PortList
@@ -240,6 +243,13 @@
 ---@field component_data fun(handle: BrickHandle, componentType: ComponentType): table<string, any>?
 ---@field component_address fun(handle: BrickHandle, componentType: ComponentType): integer?
 ---@field read_wirevalue fun(address: integer): any
+---@field read_array fun(handle: BrickHandle): any[], string
+---@field write_array fun(handle: BrickHandle, values: any[])
+---@field read_map fun(handle: BrickHandle): any[][], string, string
+---@field set_map_value fun(handle: BrickHandle, key: any, value: any): boolean
+---@field on_var_changed fun(target: BrickHandle|BrickHandle[]|UObject, fn: fun(value: any, handle: BrickHandle)): (fun()), integer
+---@field on_array_changed fun(target: BrickHandle|BrickHandle[]|UObject, fn: fun(elements: any[], handle: BrickHandle)): (fun()), integer
+---@field on_map_changed fun(target: BrickHandle|BrickHandle[]|UObject, fn: fun(entries: any[][], handle: BrickHandle)): (fun()), integer
 ---@field custom_event fun(name: string, opts?: CustomEventOptions): CustomEvent
 ---@field on_custom_event fun(name: string, fn: fun(data: any[], count: integer), opts?: CustomEventListenOptions): fun()
 ---@field grids fun(): UObject[]
@@ -358,6 +368,11 @@ function __free(address) end
 ---@param bytes Bytes
 ---@return integer
 function __game_alloc(bytes) end
+---@param address integer
+function __game_free(address) end
+---@param address integer
+---@param bytes Bytes
+function __poke(address, bytes) end
 ---@param path string
 ---@param fn fun(self: UObject, params: Bytes)
 function __on_call(path, fn) end

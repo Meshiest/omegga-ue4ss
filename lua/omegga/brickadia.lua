@@ -187,6 +187,16 @@ function M.brick_count(grid)
     return cdo("BRLuauGridLibrary"):GetCount(grid or M.global_grid())
 end
 
+--- Every brick on a grid (default: the global grid) as BrickHandles. A
+--- microchip's gates live on their own grid, a BP_MicrochipBrickGridDynamicActor_C.
+function M.grid_bricks(grid)
+    local raw = M.call(cdo("BRLuauGridLibrary"), "BRLuauGridLibrary", "GetBricks", { Self = M.ptr(grid or M.global_grid()) }).ReturnValue
+    local data, num = string.unpack("<I8i4", raw)
+    local out = {}
+    for i = 0, num - 1 do out[i + 1] = __peek(data + i * 8, 8) end
+    return out
+end
+
 --- Decode FString bytes {TCHAR* Data, int32 Num, int32 Max} from a param buffer.
 --- Num counts the terminator. Non-ASCII UTF-16 code units come back as '?'.
 function M.fstring(bytes)
@@ -456,6 +466,25 @@ function M.chat(message) M.game_mode():PushChatMessage(message) end
 
 function M.console(command)
     StaticFindObject("/Script/Engine.Default__KismetSystemLibrary"):ExecuteConsoleCommand(M.game_mode(), command, nil)
+end
+
+--- Orientation 16 (Z+ facing, no rotation) leaves a prefab as it was saved;
+--- 0 is X+ facing and turns it on its side.
+M.ORIENTATION_IDENTITY = 16
+
+--- Load a prefab bundle into the live world, added to what's there: bricks,
+--- components, wires and entities in one synchronous load (10,000 bricks in
+--- ~20 ms, against ~70 ms per brick for a fresh builder). `name` is a bundle
+--- ref under Saved/Prefabs without ".brz" ("ttt/map", or "Prefabs/Uploads/<hash>.brz"
+--- for an uploaded one). The prefab's bounds corner lands at (x, y, z), in world
+--- units. Owners come from the file. Returns the brick count added; bricks that
+--- would overlap existing ones are skipped (and logged by the game).
+function M.load_prefab(name, x, y, z, orientation)
+    assert(type(name) == "string" and not name:find('["\r\n]'), "bad prefab name")
+    local before = M.brick_count()
+    M.console(string.format('br.Prefab.Load "%s" %d %d %d 0 %d', name, math.floor(x or 0), math.floor(y or 0), math.floor(z or 0),
+        orientation or M.ORIENTATION_IDENTITY))
+    return M.brick_count() - before
 end
 
 --- The last `n` lines of the server log that contain `pattern` (plain text).
@@ -823,20 +852,30 @@ local function field_kind(prop)
     return cls
 end
 
+-- ForEachProperty only lists a struct's own properties; component data structs
+-- inherit fields (Interact's PromptCustomLabel lives on InteractableBase)
+local function each_field(struct, fn)
+    local s = struct
+    while s and s:IsValid() do
+        s:ForEachProperty(fn)
+        s = s:GetSuperStruct()
+    end
+end
+
 local function find_field(struct, name)
     local found
-    struct:ForEachProperty(function(prop)
+    each_field(struct, function(prop)
         if not found and prop:GetFName():ToString() == name then found = prop end
     end)
     return found
 end
 
---- A component type's fields: { { name, type } }, `type` being the property class
---- (`FloatProperty`, `Struct<WireString>`, ...). Writable leaf types are listed in
---- docs/lua-api.md.
+--- A component type's fields, inherited ones included: { { name, type } }, `type`
+--- being the property class (`FloatProperty`, `Struct<WireString>`, ...). Writable
+--- leaf types are listed in docs/lua-api.md.
 function M.component_fields(ctype)
     local out = {}
-    M.component_struct(ctype):ForEachProperty(function(prop)
+    each_field(M.component_struct(ctype), function(prop)
         out[#out + 1] = { name = prop:GetFName():ToString(), type = (field_kind(prop)) }
     end)
     return out
@@ -1012,6 +1051,215 @@ function M.component_data(handle, ctype)
     return out
 end
 
+-- Array and map variable gates. Their Value has no reflected fields; the layouts
+-- were read off live gates:
+--   BRDynamicArray (48 bytes): Data, Num (i32), Max (i32), the element's
+--     UBRReflectionPropertyInfo, two per-type ops pointers, ElementSize (i64).
+--     Elements are packed: Int64 and Double 8 bytes, WireString 16.
+--   BRDynamicMap (72 bytes): Data, Num, Max, key info, value info, a hash index,
+--     key ops, value ops, KeySize (i32), EntrySize (i32), ValueSize (i64).
+--     Entries are packed {key, value} pairs; lookups go through the hash index,
+--     so only values can be changed in place, not keys.
+-- The type of a collection is fixed by the gate (or the circuit that declared
+-- it), so writes encode values in the type the collection already holds.
+
+local ARRAY_VAR, MAP_VAR = "BrickComponentType_ArrayVar", "BrickComponentType_MapVar"
+
+local ELEMENT_CODECS = {
+    BRReflectionPropertyInfo_Int64 = {
+        read = function(a) return (string.unpack("<i8", __peek(a, 8))) end,
+        encode = function(v) return string.pack("<i8", math.tointeger(v) or error("not an integer: " .. tostring(v), 3)) end,
+    },
+    BRReflectionPropertyInfo_Double = {
+        read = function(a) return (string.unpack("<d", __peek(a, 8))) end,
+        encode = function(v) return string.pack("<d", assert(tonumber(v), "not a number")) end,
+    },
+    BRReflectionPropertyInfo_WireString = {
+        read = function(a) return read_wirestring(a) end,
+        encode = function(v) return wirestring(tostring(v)) end,
+    },
+}
+
+-- type info objects by address; a miss rescans, since the game makes new ones
+local info_names = {}
+local function info_name(addr)
+    if info_names[addr] == nil then
+        for _, o in ipairs(FindAllOf("BRReflectionPropertyInfo") or {}) do
+            info_names[__addr(o)] = o:GetClass():GetFName():ToString()
+        end
+        info_names[addr] = info_names[addr] or false
+    end
+    return info_names[addr] or nil
+end
+
+local function codec(info)
+    local name = info_name(info)
+    local c = name and ELEMENT_CODECS[name]
+    if not c then error("unsupported element type " .. tostring(name or string.format("%x", info)), 3) end
+    return c, name
+end
+
+local function collection(handle, ctype)
+    local t = M.component_type(ctype)
+    local addr = M.component_address(handle, t)
+    if not addr then error("the brick has no " .. ctype, 3) end
+    local struct = M.component_struct(t)
+    return addr, addr + find_field(struct, "Value"):GetOffset_Internal(), addr + find_field(struct, "MutationVersion"):GetOffset_Internal()
+end
+
+local function bump(version_addr)
+    __poke(version_addr, string.pack("<I8", string.unpack("<I8", __peek(version_addr, 8)) + 1))
+end
+
+--- An Array Variable gate's elements as a Lua list, and the element type's name
+--- (BRReflectionPropertyInfo_Int64 / _Double / _WireString).
+function M.read_array(handle)
+    local _, value = collection(handle, ARRAY_VAR)
+    local data, num, _, info, _, _, size = string.unpack("<I8i4i4I8I8I8I8", __peek(value, 48))
+    local c, name = codec(info)
+    local out = {}
+    for i = 0, num - 1 do out[i + 1] = c.read(data + i * size) end
+    return out, name
+end
+
+--- Replace an Array Variable gate's elements with `values`, converted to the
+--- array's element type. Gates that read the array see the new elements on their
+--- next run; gates that only react to changes made through array gates are not
+--- told. Replaced strings are not released (a few bytes each).
+function M.write_array(handle, values)
+    local _, value, version = collection(handle, ARRAY_VAR)
+    local data, _, max, info, _, _, size = string.unpack("<I8i4i4I8I8I8I8", __peek(value, 48))
+    local c = codec(info)
+    local parts = {}
+    for i, v in ipairs(values) do parts[i] = c.encode(v) end
+    local bytes, n = table.concat(parts), #values
+    assert(#bytes == n * size, "element size mismatch")
+    if n <= max and data ~= 0 then
+        if n > 0 then __poke(data, bytes) end
+        __poke(value + 8, string.pack("<i4", n))
+    else
+        -- a bigger buffer from the engine's heap, which the array later grows or
+        -- frees itself
+        local mem = __game_alloc(bytes)
+        __poke(value, string.pack("<I8i4i4", mem, n, n))
+        if data ~= 0 then __game_free(data) end
+    end
+    bump(version)
+end
+
+--- A Map Variable gate's entries as a list of { key, value }, and the key and
+--- value type names.
+function M.read_map(handle)
+    local _, value = collection(handle, MAP_VAR)
+    local data, num, _, kinfo, vinfo, _, _, _, ksize, stride = string.unpack("<I8i4i4I8I8I8I8I8i4i4", __peek(value, 72))
+    local kc, kname = codec(kinfo)
+    local vc, vname = codec(vinfo)
+    local out = {}
+    for i = 0, num - 1 do
+        local e = data + i * stride
+        out[i + 1] = { kc.read(e), vc.read(e + ksize) }
+    end
+    return out, kname, vname
+end
+
+--- Change the value stored under an existing key of a Map Variable gate.
+--- Returns false when the key isn't there: adding keys needs the map's hash
+--- index, so new keys go through a Set gate.
+function M.set_map_value(handle, key, v)
+    local _, value, version = collection(handle, MAP_VAR)
+    local data, num, _, kinfo, vinfo, _, _, _, ksize, stride = string.unpack("<I8i4i4I8I8I8I8I8i4i4", __peek(value, 72))
+    local kc, vc = codec(kinfo), codec(vinfo)
+    for i = 0, num - 1 do
+        local e = data + i * stride
+        if kc.read(e) == key then
+            __poke(e + ksize, vc.encode(v))
+            bump(version)
+            return true
+        end
+    end
+    return false
+end
+
+-- Change events for variable gates. Gates change these in the engine's own wire
+-- code, which no UFunction sees, so each watched gate is checked once a tick:
+-- arrays and maps by their MutationVersion counter, plain variables by their
+-- 33 value bytes. A handful of bytes per gate per tick.
+
+local VAR = "BrickComponentType_Var"
+local WIRE_VALUE_SIZE = 0x21
+
+-- the gates of `ctype` named by `target`: one handle, a list of them, or a grid
+-- (every such gate on it now; gates added later are not picked up)
+local function watch_targets(target, ctype)
+    local list
+    if type(target) == "string" then
+        list = { target }
+    elseif type(target) == "table" then
+        list = target
+    else
+        list = M.grid_bricks(target)
+    end
+    local out = {}
+    for _, h in ipairs(list) do
+        if M.brick_valid(h) and M.component_address(h, ctype) then out[#out + 1] = h end
+    end
+    return out
+end
+
+local function watch(target, ctype, field, size, decode, fn)
+    local t = M.component_type(ctype)
+    local offset = find_field(M.component_struct(t), field):GetOffset_Internal()
+    local gates = {}
+    for _, h in ipairs(watch_targets(target, ctype)) do
+        local addr = M.component_address(h, t)
+        gates[#gates + 1] = { handle = h, addr = addr, last = __peek(addr + offset, size), value = decode(h, addr + offset) }
+    end
+    local stop
+    stop = M.on_tick(function()
+        for i = #gates, 1, -1 do
+            local g = gates[i]
+            -- a deleted gate's storage slot can be reused by another component
+            if not M.brick_valid(g.handle) or M.component_address(g.handle, t) ~= g.addr then
+                table.remove(gates, i)
+            else
+                local now = __peek(g.addr + offset, size)
+                if now ~= g.last then
+                    g.last = now
+                    local value = decode(g.handle, g.addr + offset)
+                    -- a string's bytes are a pointer to its text, so setting an
+                    -- equal string changes them without changing the value
+                    if type(value) ~= "string" or value ~= g.value then
+                        g.value = value
+                        fn(value, g.handle)
+                    end
+                end
+            end
+        end
+        if #gates == 0 then stop() end
+    end)
+    return stop, #gates
+end
+
+--- Call fn(value, handle) whenever a Variable gate's value changes. `target` is a
+--- gate's handle, a list of them, or a grid (a microchip's grid, say), which
+--- watches every Variable gate on it at the time of the call. Returns a function
+--- that stops watching, and how many gates are watched.
+function M.on_var_changed(target, fn)
+    return watch(target, VAR, "Value", WIRE_VALUE_SIZE, function(_, at) return read_wirevalue(at) end, fn)
+end
+
+--- Like BR.on_var_changed for Array Variable gates: fn(elements, handle) after
+--- each change (pushes, sets, BR.write_array).
+function M.on_array_changed(target, fn)
+    return watch(target, ARRAY_VAR, "MutationVersion", 8, function(h) return (M.read_array(h)) end, fn)
+end
+
+--- Like BR.on_var_changed for Map Variable gates: fn(entries, handle), entries as
+--- BR.read_map gives them.
+function M.on_map_changed(target, fn)
+    return watch(target, MAP_VAR, "MutationVersion", 8, function(h) return (M.read_map(h)) end, fn)
+end
+
 -- Ticks: one native tick listener per Lua state runs every BR.on_tick callback.
 local tick_fns = {}
 local ticking = false
@@ -1080,6 +1328,9 @@ local function place_helper(asset, x, y, z, grid)
     return assert(b, "could not place " .. asset)
 end
 
+-- ticks between two deliveries of one custom event sender
+local SEND_GAP = 2
+
 local function opts_position(opts)
     if opts and opts.at then return opts.at[1], opts.at[2], opts.at[3] end
     return helper_position()
@@ -1088,7 +1339,9 @@ end
 --- Place a Send Custom Event gate named `name` (with the trigger that fires it) and
 --- return `ev`: `ev.send(...)` fires the event with up to 8 data values (wire
 --- values: BR.wire_bool / int / double / string). Like BR.trigger, send from a
---- later call than the one that placed it.
+--- later call than the one that placed it. Every send is delivered: sends made
+--- faster than the gate can fire are queued and go out a couple of ticks apart,
+--- in order. `send` returns how many are still waiting.
 ---
 --- opts.at = {x, y, z} places it there (default: out of the way above the map).
 --- opts.target = a brick grid entity (BR.grids(), BR.brick_grid(brick)) sends the
@@ -1115,8 +1368,12 @@ function M.custom_event(name, opts)
     local trigger = M.trigger(x, y + 40, z)
     trigger.connect(sender, SN, "ExecIn")
     local ev = { brick = sender, trigger = trigger }
-    function ev.send(...)
-        local data = table.pack(...)
+    -- The trigger fires the sender a tick after it is bumped, and the sender
+    -- reads its data inputs then, so a second send before that would overwrite
+    -- the first one's data and the trigger would fire once. Sends wait in a
+    -- queue and go out SEND_GAP ticks apart.
+    local queue, wait, stop = {}, 0, nil
+    local function deliver(data)
         if data.n > 0 then
             M.transaction(M.player(), function(tx)
                 for i = 1, math.min(data.n, 8) do
@@ -1124,7 +1381,24 @@ function M.custom_event(name, opts)
                 end
             end)
         end
-        return trigger.fire()
+        trigger.fire()
+        wait = SEND_GAP
+    end
+    function ev.send(...)
+        local data = table.pack(...)
+        if wait == 0 and #queue == 0 then
+            deliver(data)
+        else
+            queue[#queue + 1] = data
+        end
+        stop = stop or M.on_tick(function()
+            if wait > 0 then wait = wait - 1 end
+            if wait > 0 then return end
+            if #queue > 0 then return deliver(table.remove(queue, 1)) end
+            stop()
+            stop = nil
+        end)
+        return #queue
     end
     return ev
 end
