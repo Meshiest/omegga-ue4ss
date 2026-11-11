@@ -14,8 +14,14 @@ omegga install gh:Meshiest/omegga-ue4ss
 
 Then restart the server. Reloading the plugin doesn't relaunch the game.
 
-On first start the plugin downloads the UE4SS runtime from this repo's release for its version
-(`runtimeUrl`). You can also build one with `native/build.sh` and leave it in `runtime/`.
+Installing or updating the plugin (its `setup.sh`) downloads the two native binaries built from
+its own source, UE4SS and the BrickadiaBridge mod, from this repo's `runtime` release. Each is
+fetched on its own and only when the source needs a different build, so an update that changes
+only the mod downloads only the mod, and both are installed together or not at all. A server
+start doesn't touch the network: it uses what's in `runtime/`, and warns if those binaries were
+built from other source (an update installed before CI had published its build; run `setup.sh`
+again). `RUNTIME_BASE_URL` points `setup.sh` at another host. You can also build both with
+`native/build.sh`; the plugin then uses `runtime/` as it is until you delete it.
 
 Put mods in `data/Mods/`, the same as any UE4SS install (`mods.txt`, or an `enabled.txt` in
 each mod). Other omegga plugins can ship UE4SS mods in their own `mods/` folder and they get
@@ -66,7 +72,7 @@ UE4SS generates on the server ([docs/lua-api.md](docs/lua-api.md#editor-completi
 | `bin/launch.sh` | starts the game with UE4SS when it's ready for that binary, without it otherwise |
 | `bin/run_ue4ss.sh` | the Linux port's preload launcher |
 | `src/` | the plugin (setup, signature checks, the socket client); this is all `setup.sh` builds |
-| `tools/` | dev CLIs: verify, acceptance, dumpq, and `tag.sh` for `just tag` (not shipped) |
+| `tools/` | not part of the plugin: dev CLIs (verify, acceptance, dumpq, built by `build:dev`), and `fetch-runtime.ts` and `runtime-keys.ts`, which `setup.sh` and CI run with Node's type stripping (checked by `tsconfig.tools.json`) |
 | `test/` | unit tests |
 | `overlay/` | signatures, memory layouts and the settings template |
 | `mods/BrickadiaBridge/` | the bridge mod: Lua `exec`, plus the C++ half that owns the socket and the raw-call helpers |
@@ -83,7 +89,7 @@ npm install && npm run build
 npm test                                                 # unit tests
 GAME_BINARY=<BrickadiaServer-Linux-Shipping> npm test    # also check signatures against a real binary
 npm run verify -- <BrickadiaServer-Linux-Shipping>       # signature report for one build
-native/build.sh                                          # build runtime/ and the release tarball
+native/build.sh                                          # build UE4SS and the bridge mod into runtime/
 npm run acceptance                                       # end-to-end checks against a running server
 npm run dumpq -- data/UE4SS/UE4SS_ObjectDump.txt '^BRLuauGridLibrary$'   # look up API signatures
 ```
@@ -91,11 +97,33 @@ npm run dumpq -- data/UE4SS/UE4SS_ObjectDump.txt '^BRLuauGridLibrary$'   # look 
 After a game update, run `npm run verify` on the new binary. A `corrected` row still works,
 but it means the signature in `overlay/UE4SS_Signatures/` is worth refreshing.
 
-CI (`.github/workflows/ci.yml`) runs the tests on every push. On a `v*` tag it builds the runtime
-and attaches it to the release. It needs a `GH_REPO_SSH` secret, because the Linux UEPseudo
-fork is Epic-gated. `just tag` tags the package.json version and pushes it, since the default
-`runtimeUrl` uses that version. Signature checks against the game binary only run locally; the
-binary can't be redistributed.
+### Building the native runtime yourself
+
+The plugin normally downloads its two native binaries (see [Install](#install)). To build them
+instead, for a change to the C++ mod or the UE4SS patches:
+
+1. Install clang 18 or newer, Rust (for UE4SS's patternsleuth), Python 3 with `venv`, and git.
+2. Link your GitHub account to an Epic Games account and add an SSH key to GitHub. UE4SS's
+   Unreal headers come from `github.com/tc-imba/UEPseudo`, which only Epic-linked accounts can
+   read, and `build.sh` clones it over SSH.
+3. Run `native/build.sh` (or `just runtime`).
+
+The first run clones tc-imba's Linux port of RE-UE4SS at the commits in `native/patches/*.base`,
+applies the patches there, sets up cmake and ninja in a venv, and builds everything into
+`native/work/`, which takes a while. Later runs only rebuild what changed, so a mod change
+takes about a minute. It finishes by running UE4SS's tests and copying `libUE4SS.so` and
+`BrickadiaBridge/main.so` into `runtime/`.
+
+`runtime/` then holds a `.local` marker, and the plugin uses those binaries as they are, never
+downloading over them; restart the server to load them. Delete `runtime/` to go back to the
+published builds.
+
+### CI
+
+CI (`.github/workflows/ci.yml`) runs the tests on every push. On `main` it builds whichever of the two binaries the `runtime` release doesn't have for this source (keys in
+`src/runtime-keys.ts`) and uploads it; a mod-only change rebuilds only the mod, on a cached
+UE4SS build. It needs a `GH_REPO_SSH` secret, because the Linux UEPseudo fork is Epic-gated.
+Signature checks against the game binary only run locally; the binary can't be redistributed.
 
 ## Known gaps
 

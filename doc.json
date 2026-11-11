@@ -2,13 +2,7 @@
   "name": "ue4ss",
   "description": "Runs the Brickadia Linux server under UE4SS, with Lua and C++ mods from data/Mods",
   "author": "cake",
-  "config": {
-    "runtimeUrl": {
-      "description": "Where to download the UE4SS runtime when runtime/ is empty ({version} is this plugin's version)",
-      "default": "https://github.com/Meshiest/omegga-ue4ss/releases/download/v{version}/ue4ss-runtime-linux-x64.tar.gz",
-      "type": "string"
-    }
-  },
+  "config": {},
   "commands": [],
   "launch": {
     "wrapper": "bin/launch.sh",

@@ -1,6 +1,14 @@
-# Tests on every push; on a v* tag, builds the UE4SS runtime and attaches
-# release/ue4ss-runtime-linux-x64.tar.gz to that tag's release, which is what
-# the plugin's default runtimeUrl downloads.
+# Tests on every push. On main, makes sure the `runtime` release holds the
+# native binaries built from this commit's source: libUE4SS-<key>.so and
+# BrickadiaBridge-<key>.so, keyed by content (src/runtime-keys.ts). A binary
+# already published for the same source isn't rebuilt, so a commit that only
+# touches the C++ mod builds and uploads only the mod. The plugin downloads each
+# binary by the keys of its own checkout.
+#
+# native/work (the UE4SS checkout and build) is cached by the UE4SS key, which
+# turns a mod-only build into a minute's work. The cache can expire; then the
+# next build makes UE4SS again, and the binary users download stays the one in
+# the release.
 #
 # Secrets:
 #   GH_REPO_SSH  a key that can read github.com/tc-imba/UEPseudo (an account
@@ -13,7 +21,7 @@ name: ci
 on:
   push:
     branches: ['**']
-    tags: ['v*']
+  workflow_dispatch:
 
 jobs:
   test:
@@ -27,28 +35,64 @@ jobs:
       - run: npm test
 
   runtime:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     needs: test
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+    # two pushes in a row must not race on the same release assets
+    concurrency: runtime-release
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE: runtime
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Keys
+        id: keys
+        run: node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON tools/runtime-keys.ts . | tee -a "$GITHUB_OUTPUT"
+      - name: What the release lacks
+        id: need
+        run: |
+          have=$(gh release view "$RELEASE" --json assets -q '.assets[].name' 2>/dev/null || true)
+          lacks() { grep -qxF "$1" <<< "$have" && echo false || echo true; }
+          ue4ss=$(lacks "${{ steps.keys.outputs.ue4ss_asset }}")
+          mod=$(lacks "${{ steps.keys.outputs.mod_asset }}")
+          echo "ue4ss=$ue4ss" >> "$GITHUB_OUTPUT"
+          echo "mod=$mod" >> "$GITHUB_OUTPUT"
+          echo "build=$([[ $ue4ss == true || $mod == true ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
       - name: Toolchain
+        if: steps.need.outputs.build == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends clang lld python3-venv
       - name: SSH for UEPseudo
+        if: steps.need.outputs.build == 'true'
         run: |
           mkdir -p ~/.ssh
           printf '%s\n' "${{ secrets.GH_REPO_SSH }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan github.com >> ~/.ssh/known_hosts
-      - run: native/build.sh
-      - name: Attach to release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+      - uses: actions/cache@v4
+        if: steps.need.outputs.build == 'true'
+        with:
+          path: native/work
+          key: ue4ss-work-${{ steps.keys.outputs.ue4ss }}
+      - if: steps.need.outputs.build == 'true'
+        run: native/build.sh
+      - name: Publish
+        if: steps.need.outputs.build == 'true'
         run: |
-          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "$TAG" --notes ""
-          gh release upload "$TAG" release/ue4ss-runtime-linux-x64.tar.gz --clobber
+          gh release view "$RELEASE" >/dev/null 2>&1 || gh release create "$RELEASE" \
+            --prerelease --latest=false --title "Native runtime builds" \
+            --notes "libUE4SS and BrickadiaBridge builds by content key; the plugin downloads the ones its source needs."
+          mkdir -p upload
+          if [[ "${{ steps.need.outputs.ue4ss }}" == true ]]; then
+            cp runtime/libUE4SS.so "upload/${{ steps.keys.outputs.ue4ss_asset }}"
+          fi
+          if [[ "${{ steps.need.outputs.mod }}" == true ]]; then
+            cp runtime/BrickadiaBridge/main.so "upload/${{ steps.keys.outputs.mod_asset }}"
+          fi
+          gh release upload "$RELEASE" upload/*

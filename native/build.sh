@@ -5,10 +5,12 @@
 #
 #   native/build.sh [work dir]     (default: native/work)
 #
-# Produces runtime/ (what the plugin uses) and release/ue4ss-runtime-linux-x64.tar.gz
-# (what runtimeUrl serves). Needs clang 18+, Rust, Python 3 (for a local
-# cmake/ninja venv) and SSH access to github.com/tc-imba/UEPseudo, which is
-# gated behind the Epic Games GitHub link, so HTTPS clones of it fail.
+# Produces runtime/ (what the plugin uses). CI publishes the same two binaries
+# to the `runtime` release by content key (src/runtime-keys.ts).
+#
+# Needs clang 18+, Rust, Python 3 (for a local cmake/ninja venv) and SSH access
+# to github.com/tc-imba/UEPseudo, which is gated behind the Epic Games GitHub
+# link, so HTTPS clones of it fail.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/.." && pwd)
@@ -49,6 +51,7 @@ mkdir -p "$root/runtime/BrickadiaBridge"
 install -m 755 "$lib/libUE4SS.so" "$root/runtime/libUE4SS.so"
 install -m 755 "$lib/main.so" "$root/runtime/BrickadiaBridge/main.so"
 install -m 644 "$root/LICENSE-UE4SS" "$root/runtime/LICENSE-UE4SS"
-mkdir -p "$root/release"
-tar -czf "$root/release/ue4ss-runtime-linux-x64.tar.gz" -C "$root/runtime" .
-ls -la "$root/runtime" "$root/release/ue4ss-runtime-linux-x64.tar.gz"
+# the plugin uses a local build as it is and never downloads over it; delete
+# runtime/ to go back to the published binaries
+touch "$root/runtime/.local"
+ls -la "$root/runtime"

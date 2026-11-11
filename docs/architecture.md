@@ -39,8 +39,11 @@ in this document lives in the plugin. omegga also has `server.crashreports: fals
 `init()` runs before the game is spawned, on every server start (and on plugin reload, which
 doesn't relaunch the game):
 
-1. **Runtime.** `runtime/libUE4SS.so` and `runtime/BrickadiaBridge/main.so`, downloaded once from
-   `runtimeUrl` (the GitHub release for the plugin's version) or built by `native/build.sh`.
+1. **Runtime.** `runtime/libUE4SS.so` and `runtime/BrickadiaBridge/main.so`, downloaded by
+   `setup.sh` on install and update from the `runtime` release, by a content key of the source
+   each is built from (`src/runtime-keys.ts`, `src/runtime.ts`; `runtime/keys.json` records
+   what's installed), or built by `native/build.sh` (marked with `runtime/.local`, never
+   replaced). This step only checks them, without the network.
 2. **`data/UE4SS/`**, the UE4SS working directory: `libUE4SS.so`, `run_ue4ss.sh`, layout files,
    a generated `UE4SS-settings.ini`. Files are replaced by write-and-rename, never in place: the
    running game maps `libUE4SS.so`, and a plugin reload must not change it underneath.

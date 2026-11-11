@@ -41,9 +41,6 @@ function hasUe4ssMods(dir: string) {
   }
 }
 
-interface Config {
-  runtimeUrl?: string;
-}
 
 const PLUGIN_DIR = path.resolve(__dirname, '..');
 
@@ -66,10 +63,7 @@ export default class Ue4ssPlugin {
   /** Lua event name (or '*') -> plugins that asked for it */
   readonly #subscribers = new Map<string, Set<string>>();
 
-  constructor(
-    private readonly omegga: Omegga,
-    private readonly config: Config,
-  ) {
+  constructor(private readonly omegga: Omegga) {
     this.#bridge = new Bridge(socketPath(omegga.dataPath), {
       emit: (event, data) => this.#deliver(event, data),
       call: async (plugin, event, args) => {
@@ -111,7 +105,6 @@ export default class Ue4ssPlugin {
       dataDir: this.omegga.dataPath,
       pluginDir: PLUGIN_DIR,
       gameBinary: this.omegga.getGameBinaryPath(),
-      runtimeUrl: this.config.runtimeUrl || undefined,
       extraModDirs,
       log,
     });

@@ -1,10 +1,10 @@
-import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Elf } from './elf';
 import type { Log } from './log';
 import { formatReport, type SymbolReport, usable, verifySignatures, writeSignatures } from './verify';
 import { buildChangelist } from './version';
+import { checkRuntime } from './runtime';
 import { checkVTables, parseVTableOffsets, type VTableCheck } from './vtables';
 
 export interface PrepareOptions {
@@ -14,11 +14,6 @@ export interface PrepareOptions {
   pluginDir: string;
   /** the game binary omegga will launch, when it can tell */
   gameBinary: string | null;
-  /**
-   * tar.gz with libUE4SS.so and BrickadiaBridge/main.so, fetched when runtime/ is
-   * empty; `{version}` becomes this plugin's package.json version
-   */
-  runtimeUrl?: string;
   /** mod folders of other plugins to load as well (see Ue4ssPlugin.pluginModDirs) */
   extraModDirs?: string[];
   log: Log;
@@ -116,38 +111,6 @@ function writeAtomic(dest: string, text: string) {
   fs.renameSync(tmp, dest);
 }
 
-const RUNTIME_FILES = ['libUE4SS.so', 'BrickadiaBridge/main.so'];
-
-// read on use, not at load: the developer CLIs import this module from
-// build/src/, where '..' is not the plugin root
-function pluginVersion(): string {
-  return JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')).version;
-}
-
-async function download(url: string): Promise<Buffer> {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`runtime download failed: HTTP ${res.status}`);
-  return Buffer.from(await res.arrayBuffer());
-}
-
-async function ensureRuntime(opts: PrepareOptions): Promise<string> {
-  const dir = path.join(opts.pluginDir, 'runtime');
-  const missing = () => RUNTIME_FILES.filter(f => !fs.existsSync(path.join(dir, f)));
-  if (!missing().length) return dir;
-  if (!opts.runtimeUrl)
-    throw new Error(`runtime/ is missing ${missing().join(', ')} and no runtimeUrl is configured`);
-
-  const url = opts.runtimeUrl.split('{version}').join(pluginVersion());
-  opts.log.info('Downloading UE4SS runtime from', url);
-  fs.mkdirSync(dir, { recursive: true });
-  const archive = path.join(dir, 'runtime.tar.gz');
-  fs.writeFileSync(archive, await download(url));
-  execFileSync('tar', ['-xzf', archive, '-C', dir]);
-  fs.rmSync(archive);
-  if (missing().length) throw new Error(`runtime archive lacks ${missing().join(', ')}`);
-  return dir;
-}
-
 /**
  * UE4SS-settings.ini from the shipped template, with the mod folders pointed at
  * omegga's data/Mods (the server owner's mods) plus this plugin's mods/.
@@ -186,7 +149,7 @@ export async function prepare(opts: PrepareOptions): Promise<PrepareResult> {
 
   let runtime: string;
   try {
-    runtime = await ensureRuntime(opts);
+    runtime = checkRuntime(opts.pluginDir, opts.log);
   } catch (e) {
     return fail((e as Error).message);
   }
