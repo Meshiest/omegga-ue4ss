@@ -29,7 +29,7 @@ npm run dumpq -- data/UE4SS/UE4SS_ObjectDump.txt '.' '(?i)chat'
 ```
 
 `Struct<X>` parameters: check whether `X` has reflected fields (`grep 'Property /Script/Brickadia.X:'`).
-None means opaque: use `BR.call`.
+None means opaque: use `BR.raw.call`.
 
 ## Enums and ports
 
@@ -41,14 +41,14 @@ e:ForEachName(function(name, value) out[#out + 1] = name:ToString() .. "=" .. va
 return out
 
 -- a component type's ports
-return BR.ports("BotSpawn")
+return BR.component.ports("BotSpawn")
 ```
 
 ## Trying a call
 
 1. `__fn_layout("/Script/Brickadia.Class:Function")` shows the buffer: each param's offset and
    size. Compare it with `dumpq`.
-2. Build args with `string.pack`, call with `BR.call`, and look at every param's bytes
+2. Build args with `string.pack`, call with `BR.raw.call`, and look at every param's bytes
    afterwards (hex them: `bytes:gsub(".", function(c) return string.format("%02x", c:byte()) end)`).
 3. If a call does nothing, it usually checked something and returned early: a wrong
    WorldContextObject (must be the UWorld), a zero-count port ref, an untrusted brick, a player
@@ -78,9 +78,9 @@ notes and tools (`xref.py`, `vtable.py`) live in a separate research repo.
   mode's `MaxPendingCustomEventsPerGate` (the send queue), and receiver lookup by name near
   the WireString comparison. Its addresses would be build-specific, so it would need resolving
   like the UE4SS signatures, with the gate circuit as the fallback.
-- `BRLuauWorldLibrary:OverlapBox` / `OverlapSphere`: array return values, through `BR.call`.
+- `BRLuauWorldLibrary:OverlapBox` / `OverlapSphere`: array return values, through `BR.raw.call`.
 - Changelist tokens beyond leaf values (arrays, maps, enums, object references), for fields
-  `BR.set_component` refuses today.
+  `BR.component.set` refuses today.
 - `BRChatCommandWorldSubsystem:CallChatCommand` and round control on `BRGameModeBase`.
 
 ## The changelist method

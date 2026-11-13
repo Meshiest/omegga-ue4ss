@@ -105,6 +105,18 @@ function install(src: string, dest: string, mode?: number) {
   fs.renameSync(tmp, dest);
 }
 
+/**
+ * Make `link` a symlink to directory `target`. Whatever is at `link` is
+ * replaced: it is generated, an older copy or link of the same files.
+ */
+function linkDir(target: string, link: string) {
+  const current = fs.lstatSync(link, { throwIfNoEntry: false });
+  if (current?.isSymbolicLink() && fs.readlinkSync(link) === target) return;
+  if (current) fs.rmSync(link, { recursive: true, force: true });
+  fs.mkdirSync(path.dirname(link), { recursive: true });
+  fs.symlinkSync(target, link, 'dir');
+}
+
 function writeAtomic(dest: string, text: string) {
   const tmp = `${dest}.tmp-${process.pid}`;
   fs.writeFileSync(tmp, text);
@@ -167,11 +179,10 @@ export async function prepare(opts: PrepareOptions): Promise<PrepareResult> {
     ]),
   );
   // shared Lua libraries for every mod: require("omegga"), require("omegga.brickadia")
-  // resolve through UE4SS's `<mods>/shared/?/?.lua` and `shared/?.lua` paths
-  const shared = path.join(opts.dataDir, 'Mods', 'shared', 'omegga');
-  fs.mkdirSync(shared, { recursive: true });
-  for (const f of fs.readdirSync(path.join(opts.pluginDir, 'lua', 'omegga')))
-    install(path.join(opts.pluginDir, 'lua', 'omegga', f), path.join(shared, f));
+  // resolve through UE4SS's `<mods>/shared/?/?.lua` and `shared/?.lua` paths. A
+  // link rather than a copy, so the game always runs the plugin's own Lua: an edit
+  // or update is live after a BR_RELOAD, and nothing stale is left behind
+  linkDir(path.join(opts.pluginDir, 'lua', 'omegga'), path.join(opts.dataDir, 'Mods', 'shared', 'omegga'));
 
   const dlls = path.join(opts.pluginDir, 'mods', 'BrickadiaBridge', 'dlls');
   fs.mkdirSync(dlls, { recursive: true });

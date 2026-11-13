@@ -9,7 +9,7 @@ npm run dumpq -- data/UE4SS/UE4SS_ObjectDump.txt '^(BRLuau[A-Za-z]+Library|BCSLi
 
 Format: `Function(Param: Type @offset, ...)`. `Struct<X>` with no reflected fields (BrickHandle,
 BRLuauBuilder, BRLuauPortRef, WireValue, BRLuauTransaction, BrickPersistentHandle,
-BREntityPersistentHandle, BCSComponentHandle) must go through `BR.call`; see
+BREntityPersistentHandle, BCSComponentHandle) must go through `BR.raw.call`; see
 [brickadia-internals.md](../brickadia-internals.md). Functions with only reflected types can
 be called directly from UE4SS Lua (`obj:Function(...)`). Delegate signatures and client RPCs
 are omitted.

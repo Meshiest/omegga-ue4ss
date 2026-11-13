@@ -4,11 +4,25 @@
   "author": "cake",
   "config": {},
   "commands": [],
+  "consoleCommands": [
+    {
+      "name": "lua",
+      "description": "Lua mods: list them, or run Lua",
+      "example": "/lua exec #BR.player.list()",
+      "args": [
+        { "name": "action", "description": "mods (list them), or exec [Mod] <code> (in the bridge, or in that mod)", "required": true }
+      ]
+    }
+  ],
   "launch": {
     "wrapper": "bin/launch.sh",
     "env": {
       "OMEGGA_UE4SS_DIR": "${dataDir}/UE4SS",
-      "OMEGGA_UE4SS_SOCKET": "${dataDir}/UE4SS/bridge.sock"
+      "OMEGGA_UE4SS_SOCKET": "${dataDir}/UE4SS/bridge.sock",
+      "OMEGGA_UE4SS_CONFIG": "${dataDir}/LuaConfig"
     }
+  },
+  "http": {
+    "public": true
   }
 }

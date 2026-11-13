@@ -14,7 +14,11 @@ arguments: `emitPlugin(event, a, b)`, not `emitPlugin(event, [a, b])`.
 const ue4ss = await omegga.getPlugin('ue4ss');
 
 // run Lua in the bridge mod; `BR` and `Omegga` are globals there
-await ue4ss.emitPlugin('exec', 'return BR.brick_count()');   // { ok: true, result: 12 }
+await ue4ss.emitPlugin('exec', 'return BR.brick.count()');   // { ok: true, result: 12 }
+
+// the same inside one mod's own Lua state (its globals; each mod is a separate state)
+await ue4ss.emitPlugin('mods');                                // ['BrickadiaBridge', 'Zombies', ...]
+await ue4ss.emitPlugin('exec', 'return wave', 'Zombies');      // { ok: true, result: 3 }
 
 // call a Lua handler registered with Omegga.handle, in whichever mod registered it
 await ue4ss.emitPlugin('call', 'greet', 'world');            // { ok: true, result: 'hello world' }
@@ -30,6 +34,10 @@ omegga.on('ue4ss:watch', data => { /* ... */ });
 Replies are `{ ok: true, result }` or `{ ok: false, error }`; a Lua error becomes `error`.
 Values cross as JSON: UObjects arrive as their full name, functions as strings, and Lua tables
 with keys `1..n` become arrays.
+
+A mod can take code only if it requires the `omegga` module (which registers an
+`exec@<ModName>` handler), and only its globals are in reach: a `local` in the mod's main script
+is not, as with any Lua chunk. `mods` lists the mods that can.
 
 Subscribers pass their own plugin name: omegga reports every unsafe plugin's `emitPlugin`
 caller as `'unsafe'`, so the plugin can't tell who is asking.
@@ -53,12 +61,85 @@ end)
 Omegga.handle("greet", function(who) return "hello " .. who end)
 
 -- poll a value and emit `watch` { name, value, previous } when it changes
-Omegga.watch("lamp", 50, function() return BR.is_visible(lamp_brick) end)
+Omegga.watch("lamp", 50, function() return BR.brick.visible(lamp_brick) end)
 Omegga.unwatch("lamp")
 ```
 
 `Omegga.id` is this mod's interop id (each mod is its own Lua state). `Omegga.plain(v)` is the
 JSON-safe copy used for everything sent.
+
+### HTTP routes
+
+`Omegga.route(method, path, fn, opts)` answers HTTP requests to `/api/v1/plugin/ue4ss<path>` on
+omegga's web server (omegga's [plugin HTTP routes](https://github.com/brickadia-community/omegga/blob/master/docs/plugins/README.md#plugin-http-routes)).
+`fn(request)` runs on the game thread:
+
+```lua
+-- GET /api/v1/plugin/ue4ss/players: a web UI login is needed
+Omegga.route("GET", "/players", function(req)
+    local names = {}
+    for _, ps in ipairs(BR.player.list()) do names[#names + 1] = BR.player.info(ps).display_name end
+    return names
+end)
+
+-- POST /api/v1/plugin/ue4ss/hook/...: no login, so the route checks a secret itself
+Omegga.route("POST", "/hook/*", function(req)
+    if req.headers["x-secret"] ~= SECRET then return { status = 403, body = "no" } end
+    BR.server.chat(tostring(req.body.text))
+end, { public = true })
+```
+
+- `request` has `method`, `path` (below `/api/v1/plugin/ue4ss`), `query`, `headers` (lowercase
+  names), `body` (parsed JSON, the text of a text or form body, or nil), `user` (the web UI
+  user, `{ id, username }`, or nil) and `ip`.
+- A route needs a web UI login unless `opts.public`. For logged-in requests, a POST, PUT, PATCH
+  or DELETE from another site's page is refused.
+- `method` is a word like `GET`, or `*` for any. A path ending in `/*` also takes everything
+  below it; of several matches the longest path wins.
+- `fn` returns a string (a text body), a table with `status`, `headers` and `body`, any other
+  table (a JSON body) or nothing (204). An error answers 500 and is logged in omegga's console.
+  omegga waits 10 seconds for an answer.
+- Routes are handlers (`Omegga.handle`) under the names `http:<METHOD> <path>` and
+  `http-public:<METHOD> <path>`, so a later route with the same method and path wins.
+
+### Chat commands
+
+A mod takes chat commands the same way: `commands` in its `doc.json` (shaped like an omegga
+plugin's), and `Omegga.on("cmd:<name>", fn)` in Lua, which gets the player's name and the words
+omegga split from the line. The ue4ss plugin registers the declared names with omegga, so the
+player isn't told the command doesn't exist. `BR.command.register` wraps this with the player's
+PlayerState, permissions and replies (docs/lua-api.md, Chat commands).
+
+```json
+{ "commands": [{ "name": "heal", "description": "heal yourself", "args": [] }] }
+```
+
+### Console commands
+
+A mod adds commands to omegga's console (listed in its `/help`) the way an omegga plugin
+does: a `doc.json` next to its `Scripts/` folder with `consoleCommands`, and a handler in Lua.
+
+```json
+{ "consoleCommands": [
+  { "name": "arena", "description": "start or stop a round", "args": [
+    { "name": "action", "description": "start or stop", "required": true } ] } ] }
+```
+
+```lua
+Omegga.on("consolecmd:arena", function(action)
+    if action == "start" then start_round() return "round started" end
+    return { "usage: /arena start|stop", "rounds so far: " .. rounds }
+end)
+```
+
+The handler gets the typed words and runs on the game thread; what it returns (text, a list of
+lines, or a table as JSON) is printed in the console. The ue4ss plugin reads the `doc.json`
+files when it loads, so a new or changed one shows up after `/plugins reload ue4ss`. A name a
+built-in omegga command, another plugin or an earlier mod already has is skipped with a warning.
+
+The plugin's own `/lua` command lists the mods (`/lua mods`) and runs Lua in the bridge
+(`/lua exec <code>`) or in one mod's state (`/lua exec <Mod> <code>`). There is no reload: UE4SS's
+`RestartMod` hung the game thread on the first call into the restarted mod.
 
 ## Reacting to component changes
 
@@ -69,14 +150,14 @@ which a native getter can read.
 
 ```lua
 local AND, CHANGER = "BrickComponentType_Expr_LogicalAND", "Component_BrickPropertyChanger"
-local ps, owner = BR.player(), BR.owner_index()
-local gate   = BR.place(BR.builder({ asset = "B_1x1_Gate_Expr_LogicalAND", owner = owner }), 0, 0, 6)
-local signal = BR.place(BR.builder({ asset = "PB_DefaultBrick", size = { 5, 5, 6 }, owner = owner }), 40, 0, 6)
-BR.transaction(ps, function(tx)
-    tx.attach(BR.brick_id(signal), BR.component_type(CHANGER))
-    tx.connect(BR.brick_id(gate), BR.output_port(AND, "bOutput"), BR.brick_id(signal), BR.input_port(CHANGER, "bVisibility"))
+local ps, owner = BR.player.server(), BR.player.owner_index()
+local gate   = BR.brick.place(BR.brick.builder({ asset = "B_1x1_Gate_Expr_LogicalAND", owner = owner }), 0, 0, 6)
+local signal = BR.brick.place(BR.brick.builder({ asset = "PB_DefaultBrick", size = { 5, 5, 6 }, owner = owner }), 40, 0, 6)
+BR.brick.transaction(ps, function(tx)
+    tx.attach(BR.brick.id(signal), BR.component.type(CHANGER))
+    tx.connect(BR.brick.id(gate), BR.component.output_port(AND, "bOutput"), BR.brick.id(signal), BR.component.input_port(CHANGER, "bVisibility"))
 end)
-Omegga.watch("gate", 50, function() return BR.is_visible(signal) end)
+Omegga.watch("gate", 50, function() return BR.brick.visible(signal) end)
 -- plugins now get ue4ss:watch { name = "gate", value = true/false, previous = ... }
 ```
 
@@ -90,10 +171,10 @@ Omegga.watch("gate", 50, function() return BR.is_visible(signal) end)
   placed state.
 - Event components (`Event_ChatCommand`, `Event_Gamemode_ControllerJoined`, `CharacterDied`,
   zone enter/leave, ...) have exec outputs, not bools. Untested idea: drive a toggle or latch gate
-  from the exec and wire its bool into the signal brick. `BR.ports(type)` lists their outputs.
+  from the exec and wire its bool into the signal brick. `BR.component.ports(type)` lists their outputs.
 
-Other things a watch can poll cheaply: `BR.brick_count()`, a brick's position or color, entity
-transforms (`BRLuauEntityLibrary:GetTransform`), `#BR.bots()`.
+Other things a watch can poll cheaply: `BR.brick.count()`, a brick's position or color, entity
+transforms (`BRLuauEntityLibrary:GetTransform`), `#BR.npc.list()`.
 
 ## UE4SS hooks
 
@@ -148,7 +229,7 @@ routes are re-announced on every connection, so they never go stale.
 ## Caveats
 
 - Handlers can be called before the map is loaded. Anything touching the world should check
-  `BR.ready()` (the demo has a `ready` handler that plugins poll).
+  `BR.world.ready()` (the demo has a `ready` handler that plugins poll).
 - A JS call into Lua times out after 30 s (`{ ok: false, error: '... did not answer ...' }`).
 - An exception escaping a plugin's callback stops omegga's server, so the bridge client catches
   and logs everything; do the same in subscribers.

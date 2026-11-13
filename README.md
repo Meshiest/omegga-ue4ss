@@ -4,7 +4,7 @@ Runs the Brickadia Linux dedicated server under [UE4SS](https://github.com/UE4SS
 as an [omegga](https://github.com/brickadia-community/omegga) plugin. You get Lua and C++ mods
 on a headless server, plus a way for omegga plugins to talk to them.
 
-Needs omegga 1.22 or newer (for the `launch` block in `doc.json`).
+Needs omegga 1.23 or newer
 
 ## Install
 
@@ -64,6 +64,71 @@ UE4SS generates on the server ([docs/lua-api.md](docs/lua-api.md#editor-completi
 [docs/README.md](docs/README.md) is the place to start, and
 [examples/interop-demo](examples/interop-demo) is a small working plugin with its own mod.
 
+## What mods can do
+
+Everything below is in `require("omegga.brickadia")` (the `BR` global), documented in
+[docs/lua-api.md](docs/lua-api.md). It runs on the server only: players need no mod, and what
+they see arrives through the game's own replication.
+
+**Building and the world**
+
+- Place, read, change and delete bricks in transactions, as the game's tools do (`BR.brick`).
+- Scripted brick types: a behaviour that runs for every brick of an asset, however it got
+  there or went away (`BR.behavior`).
+- Gates and components: ports, inputs, settings, wires, variables, arrays and maps
+  (`BR.component`, `BR.wire`, `BR.var`).
+- Custom events, sent and received without a gate in the world.
+- Entities and dynamic grids: spawning, tags, custom properties, moving them along waypoints
+  (`BR.entity`, `BR.mover`).
+- Environment: time of day, weather, sky, fog, water, ground and lighting (`BR.env`).
+- Labels in the world, prefabs, raycasts, spawning actors and projectiles (`BR.label`,
+  `BR.prefab`, `BR.world`).
+- Procedural generation: seeded noise, terrain and mazes in one transaction (`BR.gen`).
+- Build regions: player plots, no-build areas, banned bricks and components, rules from zone
+  bricks (`BR.region`, `BR.zone`).
+
+**Players**
+
+- Who is online, characters, health, movement, teleporting, inventories and item tuning
+  (`BR.player`).
+- Player events: chat (and rewriting it), joins, deaths, building, clicks, seats, keys,
+  emotes and more, most of which a mod can refuse (`BR.event`).
+- Screen text and panels, prompts that wait for an answer, hints, camera views and fades
+  (`BR.ui`, `BR.player`).
+- Chat to everyone or to chosen players, team and private channels (`BR.chat`,
+  `BR.server`).
+- Sounds in 2D, to chosen players, or from a point in the world (`BR.sound`).
+- Audio through voice chat, and capturing what players say (`BR.voice`).
+- Timed status effects, item pickups and who may take them (`BR.effect`, `BR.pickup`).
+- Teams, leaderboards, permissions and roles (`BR.team`, `BR.leaderboard`, `BR.perm`).
+- Moderation: kicks, bans, refusing joins, AFK times and suspicious-play signals (`BR.mod`,
+  `BR.afk`, `BR.guard`).
+
+**Bots and AI**
+
+- Bots that are full players (name, avatar, tools, building, chat), driven from Lua:
+  walking, following, pathfinding over bricks, aiming and firing (`BR.bot`, `BR.nav`,
+  `BR.act`).
+- The game's own NPCs from Bot Spawn bricks (`BR.npc`).
+
+**Mod plumbing**
+
+- Chat commands declared in the mod's `doc.json`, with permissions and aliases
+  (`BR.command`), and command targets like `@team` (`BR.target`).
+- HTTP routes on omegga's web server, under `/api/v1/plugin/ue4ss/`.
+- Timers and cron schedules in game time (`BR.timer`).
+- Storage: JSON stores, SQLite databases, admin config and secrets files (`BR.store`,
+  `BR.db`, `BR.config`, `BR.secrets`).
+- Shared state across mods and omegga plugins, removal signals, Prometheus metrics and a
+  profiler for slow handlers (`BR.state`, `BR.watch`, `BR.metrics`, `BR.profile`).
+- Vector, quaternion and rotator math in plain Lua (`BR.math`).
+- Hooks on any UFunction, and raw calls for what the reflected API can't reach (`BR.event`,
+  `BR.raw`).
+
+Some things the server can set but clients don't show; [docs/client-checks.md](docs/client-checks.md)
+tracks what has been tried with a real client. Among them: voice from a bot isn't heard, a
+character's size and a grid's scale don't replicate, and a decal's material stays the default.
+
 ## Repo layout
 
 | Path | What |
@@ -71,7 +136,8 @@ UE4SS generates on the server ([docs/lua-api.md](docs/lua-api.md#editor-completi
 | `doc.json` | plugin manifest, with the `launch` block |
 | `bin/launch.sh` | starts the game with UE4SS when it's ready for that binary, without it otherwise |
 | `bin/run_ue4ss.sh` | the Linux port's preload launcher |
-| `src/` | the plugin (setup, signature checks, the socket client); this is all `setup.sh` builds |
+| `omegga.main.ts` | the plugin |
+| `src/` | setup, signature checks, the socket client |
 | `tools/` | not part of the plugin: dev CLIs (verify, acceptance, dumpq, built by `build:dev`), and `fetch-runtime.ts` and `runtime-keys.ts`, which `setup.sh` and CI run with Node's type stripping (checked by `tsconfig.tools.json`) |
 | `test/` | unit tests |
 | `overlay/` | signatures, memory layouts and the settings template |
@@ -85,7 +151,8 @@ UE4SS generates on the server ([docs/lua-api.md](docs/lua-api.md#editor-completi
 ## Development
 
 ```sh
-npm install && npm run build
+npm install
+npm run typecheck                                        # the plugin's types, against the omegga.d.ts omegga copies in on load
 npm test                                                 # unit tests
 GAME_BINARY=<BrickadiaServer-Linux-Shipping> npm test    # also check signatures against a real binary
 npm run verify -- <BrickadiaServer-Linux-Shipping>       # signature report for one build

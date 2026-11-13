@@ -140,6 +140,46 @@ index 9bf0edbd..fb657454 100644
          // Apply Debug Build setting from settings file only for now.
          Unreal::Version::DebugBuild = settings_manager.EngineVersionOverride.DebugBuild;
          Output::send<LogLevel::Warning>(STR("DebugGame Setting Enabled? {}\n"), Unreal::Version::DebugBuild);
+diff --git a/deps/first/Helpers/include/Helpers/String.hpp b/deps/first/Helpers/include/Helpers/String.hpp
+index 1952504f..4670e8d6 100644
+--- a/deps/first/Helpers/include/Helpers/String.hpp
++++ b/deps/first/Helpers/include/Helpers/String.hpp
+@@ -284,9 +284,34 @@ namespace RC
+         return to_u16string(temp_input);
+     }
+ 
++    // Lua and the rest of UE4SS hand strings over as UTF-8, so they are decoded
++    // rather than copied byte for byte, which turned every non-ASCII character
++    // into several wrong ones. Input that isn't valid UTF-8 keeps the old byte
++    // copy, so nothing that worked before starts throwing.
+     auto inline to_u16string(const std::string& input) -> std::u16string
+     {
+-        return {input.begin(), input.end()};
++#if __clang__
++#pragma clang diagnostic push
++#pragma clang diagnostic ignored "-Wdeprecated-declarations"
++#endif
++        static std::wstring_convert<std::codecvt_utf8_utf16<char16_t>, char16_t> converter{};
++        try
++        {
++            return converter.from_bytes(input.data(), input.data() + input.length());
++        }
++        catch (const std::range_error&)
++        {
++            std::u16string out;
++            out.reserve(input.size());
++            for (char c : input)
++            {
++                out.push_back(static_cast<char16_t>(static_cast<unsigned char>(c)));
++            }
++            return out;
++        }
++#if __clang__
++#pragma clang diagnostic pop
++#endif
+     }
+ 
+     auto inline to_u16string(std::string_view input) -> std::u16string
 diff --git a/deps/first/Helpers/src/Time.cpp b/deps/first/Helpers/src/Time.cpp
 index 73b04d4f..d34eaf4b 100644
 --- a/deps/first/Helpers/src/Time.cpp

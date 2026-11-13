@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { runtimeAssets, runtimeKeys } from '../src/runtime-keys.ts';
-import { fetchRuntime } from './fetch-runtime.ts';
+import { fetchRuntime, NotPublished } from './fetch-runtime.ts';
 
 function checkout() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'omegga-ue4ss-fetch-'));
@@ -28,12 +28,17 @@ async function serve(files: Map<string, string>) {
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
   assert.ok(address && typeof address === 'object');
-  return { url: `http://127.0.0.1:${address.port}`, close: () => server.close() };
+  return {
+    url: `http://127.0.0.1:${address.port}`,
+    close: () => server.close(),
+  };
 }
 
 const quiet = { info() {} };
 const installed = (dir: string) =>
-  ['libUE4SS.so', 'BrickadiaBridge/main.so'].map(f => fs.readFileSync(path.join(dir, 'runtime', f), 'utf8'));
+  ['libUE4SS.so', 'BrickadiaBridge/main.so'].map(f =>
+    fs.readFileSync(path.join(dir, 'runtime', f), 'utf8'),
+  );
 
 test('fetches each binary by key, and only the one that changed', async () => {
   const { dir, write } = checkout();
@@ -42,9 +47,16 @@ test('fetches each binary by key, and only the one that changed', async () => {
   try {
     let assets = runtimeAssets(runtimeKeys(dir));
     served.set(assets.ue4ss, 'lib1').set(assets.mod, 'mod1');
-    assert.deepEqual(await fetchRuntime(dir, server.url, quiet), ['ue4ss', 'mod']);
+    assert.deepEqual(await fetchRuntime(dir, server.url, quiet), [
+      'ue4ss',
+      'mod',
+    ]);
     assert.deepEqual(installed(dir), ['lib1', 'mod1']);
-    assert.deepEqual(await fetchRuntime(dir, server.url, quiet), [], 'nothing changed, nothing fetched');
+    assert.deepEqual(
+      await fetchRuntime(dir, server.url, quiet),
+      [],
+      'nothing changed, nothing fetched',
+    );
 
     write('native/BrickadiaBridge/src/main.cpp', 'int main2;');
     assets = runtimeAssets(runtimeKeys(dir));
@@ -68,8 +80,12 @@ test('a failed download leaves the installed pair as it was', async () => {
     // a UE4SS change: the new libUE4SS is published, its mod isn't yet
     write('native/patches/RE-UE4SS.patch', 'diff2');
     served.set(runtimeAssets(runtimeKeys(dir)).ue4ss, 'lib2');
-    await assert.rejects(fetchRuntime(dir, server.url, quiet), /HTTP 404/);
-    assert.deepEqual(installed(dir), ['lib1', 'mod1'], 'no new libUE4SS under the old mod');
+    await assert.rejects(fetchRuntime(dir, server.url, quiet), NotPublished);
+    assert.deepEqual(
+      installed(dir),
+      ['lib1', 'mod1'],
+      'no new libUE4SS under the old mod',
+    );
   } finally {
     server.close();
   }

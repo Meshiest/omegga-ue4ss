@@ -20,14 +20,19 @@ import {
 } from '../src/runtime-keys.ts';
 
 /** Where CI publishes the binaries. */
-export const DEFAULT_RUNTIME_BASE_URL = 'https://github.com/Meshiest/omegga-ue4ss/releases/download/runtime';
+export const DEFAULT_RUNTIME_BASE_URL =
+  'https://github.com/Meshiest/omegga-ue4ss/releases/download/runtime';
 
 interface Log {
   info(...args: unknown[]): void;
 }
 
+/** A binary for this source isn't in the release (yet). */
+export class NotPublished extends Error {}
+
 async function download(url: string): Promise<Buffer> {
   const res = await fetch(url);
+  if (res.status === 404) throw new NotPublished(`not published yet: ${url}`);
   if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
   return Buffer.from(await res.arrayBuffer());
 }
@@ -39,7 +44,11 @@ async function download(url: string): Promise<Buffer> {
  * runs against a libUE4SS.so it wasn't built with. Leaves a local build
  * (native/build.sh) alone. Returns the names fetched.
  */
-export async function fetchRuntime(pluginDir: string, baseUrl: string, log: Log): Promise<string[]> {
+export async function fetchRuntime(
+  pluginDir: string,
+  baseUrl: string,
+  log: Log,
+): Promise<string[]> {
   const dir = runtimeDir(pluginDir);
   if (fs.existsSync(path.join(dir, LOCAL_MARKER))) return [];
   const keys = runtimeKeys(pluginDir);
@@ -47,7 +56,9 @@ export async function fetchRuntime(pluginDir: string, baseUrl: string, log: Log)
   const files = runtimeFiles(pluginDir);
   const stamp = readStamp(pluginDir);
   const names = ['ue4ss', 'mod'] as const;
-  const stale = names.filter(n => stamp[n] !== keys[n] || !fs.existsSync(files[n]));
+  const stale = names.filter(
+    n => stamp[n] !== keys[n] || !fs.existsSync(files[n]),
+  );
 
   const fetched: { name: (typeof names)[number]; bytes: Buffer }[] = [];
   for (const name of stale) {
@@ -64,19 +75,45 @@ export async function fetchRuntime(pluginDir: string, baseUrl: string, log: Log)
   }
   if (fetched.length) {
     const tmp = path.join(dir, `${STAMP}.tmp-${process.pid}`);
-    fs.writeFileSync(tmp, `${JSON.stringify({ ue4ss: keys.ue4ss, mod: keys.mod }, null, 2)}\n`);
+    fs.writeFileSync(
+      tmp,
+      `${JSON.stringify({ ue4ss: keys.ue4ss, mod: keys.mod }, null, 2)}\n`,
+    );
     fs.renameSync(tmp, path.join(dir, STAMP));
   }
   return fetched.map(f => f.name);
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const pluginDir = path.resolve(process.argv[2] ?? path.join(path.dirname(fileURLToPath(import.meta.url)), '..'));
+  const pluginDir = path.resolve(
+    process.argv[2] ??
+      path.join(path.dirname(fileURLToPath(import.meta.url)), '..'),
+  );
   const log = { info: (...a: unknown[]) => console.log('[ue4ss]', ...a) };
-  fetchRuntime(pluginDir, process.env.RUNTIME_BASE_URL || DEFAULT_RUNTIME_BASE_URL, log).then(
+  fetchRuntime(
+    pluginDir,
+    process.env.RUNTIME_BASE_URL || DEFAULT_RUNTIME_BASE_URL,
+    log,
+  ).then(
     fetched => {
       if (!fetched.length) log.info('The native runtime needs no download');
     },
-    (e: Error) => console.warn('[ue4ss] Could not fetch the native runtime:', e.message),
+    (e: Error) => {
+      console.warn('[ue4ss] Could not fetch the native runtime:', e.message);
+      if (e instanceof NotPublished) {
+        // a fresh push: CI publishes the binaries for each commit on main a
+        // little after it lands
+        console.warn(
+          [
+            '[ue4ss] CI is probably still building the binaries for this version: a few minutes',
+            '[ue4ss] for a mod change, much longer when UE4SS itself changed. Progress:',
+            '[ue4ss]   https://github.com/Meshiest/omegga-ue4ss/actions',
+            '[ue4ss] When it finishes, download them and restart the server:',
+            `[ue4ss]   cd ${pluginDir} && node --experimental-strip-types tools/fetch-runtime.ts`,
+            '[ue4ss] Until then the server keeps the binaries it has, or starts without UE4SS.',
+          ].join('\n'),
+        );
+      }
+    },
   );
 }

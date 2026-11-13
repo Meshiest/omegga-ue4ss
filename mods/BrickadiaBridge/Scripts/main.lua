@@ -12,12 +12,15 @@ Omegga = require("omegga")
 
 --- Re-read the shared libraries after editing them. UE4SS's module loader keeps
 --- its own cache (ue4ss_loaded_modules) besides package.loaded; both are
---- cleared. Omegga is not reloaded: its handlers and pending calls live in it.
+--- cleared, for omegga.brickadia and each of its namespace modules. Omegga is
+--- not reloaded: its handlers and pending calls live in it.
 function BR_RELOAD()
     for key in pairs(ue4ss_loaded_modules) do
         if tostring(key):find("brickadia", 1, true) then ue4ss_loaded_modules[key] = nil end
     end
-    package.loaded["omegga.brickadia"] = nil
+    for key in pairs(package.loaded) do
+        if key:find("omegga.brickadia", 1, true) then package.loaded[key] = nil end
+    end
     BR = require("omegga.brickadia")
     return BR
 end
@@ -31,7 +34,9 @@ local function run(source)
     if not results[1] then return { ok = false, error = tostring(results[2]) } end
     local values = {}
     for i = 2, results.n do values[#values + 1] = Omegga.plain(results[i]) end
-    return { ok = true, result = (#values <= 1) and values[1] or values }
+    -- not `#values <= 1 and values[1] or values`: a lone false would fall through to the table
+    if #values <= 1 then return { ok = true, result = values[1] } end
+    return { ok = true, result = values }
 end
 
 __bridge_listen("BrickadiaBridge", function(conn, text)

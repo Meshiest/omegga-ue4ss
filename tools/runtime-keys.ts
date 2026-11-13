@@ -8,4 +8,6 @@ import { runtimeAssets, runtimeKeys } from '../src/runtime-keys.ts';
 
 const keys = runtimeKeys(process.argv[2] ?? '.');
 const assets = runtimeAssets(keys);
-process.stdout.write(`ue4ss=${keys.ue4ss}\nmod=${keys.mod}\nue4ss_asset=${assets.ue4ss}\nmod_asset=${assets.mod}\n`);
+process.stdout.write(
+  `ue4ss=${keys.ue4ss}\nmod=${keys.mod}\nue4ss_asset=${assets.ue4ss}\nmod_asset=${assets.mod}\n`,
+);

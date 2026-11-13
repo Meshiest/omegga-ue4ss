@@ -26,9 +26,9 @@ local Omegga = require("omegga")
 local BR = require("omegga.brickadia")
 
 Omegga.handle("place_red_brick", function(x, y)
-    assert(BR.ready(), "world not loaded yet")
-    local h = assert(BR.place(BR.builder({ asset = "PB_DefaultBrick", size = { 10, 10, 6 }, color = { 255, 0, 0, 255 } }), x, y, 6))
-    return BR.brick_info(h).position
+    assert(BR.world.ready(), "world not loaded yet")
+    local h = assert(BR.brick.place(BR.brick.builder({ asset = "PB_DefaultBrick", size = { 10, 10, 6 }, color = { 255, 0, 0, 255 } }), x, y, 6))
+    return BR.brick.info(h).position
 end)
 ```
 
@@ -44,14 +44,14 @@ const reply = await ue4ss.emitPlugin('call', 'place_red_brick', 0, 0);
 
 - **Never call a method on an invalid UObject.** UE4SS dereferences null and the server dies;
   `pcall` can't catch it. Check `obj:IsValid()`; `BR` helpers already do and raise Lua errors.
-  Mods start before the map loads, so wait for `BR.ready()`.
+  Mods start before the map loads, so wait for `BR.world.ready()`.
 - **Game-thread only.** UObject access from a `LoopAsync` body crashes. Wrap it in
   `ExecuteInGameThread`, as `Omegga.watch` and the handlers already do.
-- **Raw values must be the type they claim.** A wrong layout in `BR.call`, or bytes of the wrong
+- **Raw values must be the type they claim.** A wrong layout in `BR.raw.call`, or bytes of the wrong
   type in a changelist token, can crash the server. The `BR` helpers build them correctly; test
   anything raw on a scratch server.
 - **Opaque structs need raw calls.** Many Brickadia UFunctions take structs UE4SS can't marshal;
   see [lua-api.md](lua-api.md#calling-any-ufunction).
 - **Edits need an owner.** Transactions on bricks placed with the default owner come back
-  `BricksUntrusted`; place them with `owner = BR.owner_index()`.
-- **The world context is the UWorld**, not an actor in it (`BR.world_context()`).
+  `BricksUntrusted`; place them with `owner = BR.player.owner_index()`.
+- **The world context is the UWorld**, not an actor in it (`BR.world.context()`).

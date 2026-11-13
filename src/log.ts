@@ -2,6 +2,7 @@
 interface OmeggaLogger {
   log(...args: unknown[]): void;
   warn(...args: unknown[]): void;
+  error(...args: unknown[]): void;
 }
 
 declare global {
@@ -14,6 +15,7 @@ declare global {
 const NAME = '\x1b[4mue4ss\x1b[24m';
 const INFO = '\x1b[32m>>\x1b[39m';
 const WARN = '\x1b[33m>>\x1b[39m';
+const ERROR = '\x1b[31m!>\x1b[39m';
 
 /**
  * Plugin output through omegga's Logger. An unsafe plugin's console.log goes
@@ -29,6 +31,11 @@ export const log = {
     if (globalThis.Logger) globalThis.Logger.warn(NAME, WARN, ...args);
     else console.warn('[ue4ss]', ...args);
   },
+  error(...args: unknown[]) {
+    if (globalThis.Logger) globalThis.Logger.error(NAME, ERROR, ...args);
+    else console.error('[ue4ss]', ...args);
+  },
 };
 
-export type Log = typeof log;
+/** What preparing UE4SS reports through. */
+export type Log = Pick<typeof log, 'info' | 'warn'>;

@@ -2,8 +2,8 @@
 default:
     @just --list
 
-build:
-    npm run build
+typecheck:
+    npm run typecheck
 
 test:
     npm test

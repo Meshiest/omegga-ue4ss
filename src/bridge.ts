@@ -156,7 +156,9 @@ export class Bridge {
         if (!this.host) return;
         let reply: BridgeReply;
         try {
-          reply = { ok: true, result: await this.host.call(message.plugin, message.event, message.args ?? []) };
+          // Lua sends an empty table as {}, not [], so anything but a list is no arguments
+          const args = Array.isArray(message.args) ? message.args : [];
+          reply = { ok: true, result: await this.host.call(message.plugin, message.event, args) };
         } catch (e) {
           reply = { ok: false, error: (e as Error)?.message ?? String(e) };
         }

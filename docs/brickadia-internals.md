@@ -20,7 +20,7 @@ buffer.
 
 `BRLuauBuilderLibrary:Place` checks `IsA(UWorld)` on its context and then takes the world's
 `BRRegistry`; with any other object it fails without a message. `GetGlobalGrid` returns null
-for actors too. Use the world itself (`BR.world_context()`, from grid → level → world).
+for actors too. Use the world itself (`BR.world.context()`, from grid → level → world).
 UE4SS's `UObject:GetWorld()` returned a mis-wrapped object here, so don't use it.
 
 ## Opaque structs
@@ -40,13 +40,13 @@ UE4SS's `UObject:GetWorld()` returned a mis-wrapped object here, so don't use it
 
 A port ref matches the component types whose `u16` type index (at `+0x40` in the component
 type object) falls in `[FirstTypeIndex, FirstTypeIndex + TypeCount)`. A ref with `TypeCount`
-0 matches nothing, so a Set with it is silently dropped. `BR.input_port` uses the type's own
+0 matches nothing, so a Set with it is silently dropped. `BR.component.input_port` uses the type's own
 index and a count of 1.
 
 The FName is the component's **property** name: `bInputA`, not a display name like "Input A".
 A component type keeps its ports in two sorted maps (a TArray of `{FName, descriptor}` pairs):
 inputs at `+0x180` (`BCSWireInputDescriptor`, 0xA8 bytes) and outputs at `+0x190`
-(`BCSWirePortDescriptor`). That is how `BR.ports` lists them.
+(`BCSWirePortDescriptor`). That is how `BR.component.ports` lists them.
 
 `BRLuauComponentLibrary:GetPortName` returns the plain FName text whatever the type fields
 say, so it can't validate a ref.
@@ -79,8 +79,8 @@ Each action is then checked against the brick owner's trust:
 | same, with `bIsOwner = true` or `ReplicatedOwnerIndex = 0` | 0 | `BricksUntrusted` |
 | same | the controller's index from `BRGameStateBase:IdOrRegisterBrickOwner(pc)` | **applied** |
 
-So `BR.player()` spawns a `BP_PlayerController`, takes the `BP_PlayerState` the controller
-creates for itself, and registers the controller as a brick owner. Bricks placed by `BR.place`
+So `BR.player.server()` spawns a `BP_PlayerController`, takes the `BP_PlayerState` the controller
+creates for itself, and registers the controller as a brick owner. Bricks placed by `BR.brick.place`
 with that owner index (`BRLuauBuilderLibrary:SetOwnerId`; placing bypasses trust) are the
 player's own. Placing through the transaction (`RecordPlace`) with this player placed nothing.
 
@@ -99,8 +99,8 @@ report line: "You do not have permission to use admin gates." So:
 | the controller's own PlayerState with the Admin role | connected |
 | the controller's own PlayerState with `bIsOwner = true` | connected |
 
-`BR.player()` sets `bIsOwner`, which grants every permission whatever the server's roles say
-(the Owner role itself can't be given with `SetHasRole`). `BR.transaction` returns the report
+`BR.player.server()` sets `bIsOwner`, which grants every permission whatever the server's roles say
+(the Owner role itself can't be given with `SetHasRole`). `BR.brick.transaction` returns the report
 lines as `report.lines`: `CustomReportLines` is a TArray of FText at `+0x88`.
 
 Results seen in the report:
@@ -145,7 +145,7 @@ PlayerState.
   input directly, but a **Change Detector** (`B_1x1_Gate_Expr_ChangeDetectorExec`, input
   `Input`, exec output `OnChanged`) fires on the tick after its input gets a new value. Its first
   value only sets the baseline, and a wire made in the same tick as a set isn't live for it.
-  `BR.trigger` packages this.
+  `BR.brick.trigger` packages this.
 - Send Custom Event (`PB_Gate_Exec_SendCustomEvent`, `...Global`) and the receivers
   (`PB_Gate_Event_Custom`, `...Global`) match on `EventName`, a `WireString` that is component
   data, not a port. Transactions only set ports; the name is written with a property changelist
@@ -154,6 +154,142 @@ PlayerState.
   for named receivers, so it isn't a way to read names back.
 - Entity custom properties exist only as gates (`Exec_Entity_Set/Get/RemoveCustomProperty`,
   `Key` a WireString input) with no UFunction.
+
+### How a custom event travels
+
+Addresses are from the CL16507 Linux server, for orientation only; anything built on this has to
+find them by pattern.
+
+- **Dispatch:** `0x7e4d210(UBRRegistry* reg, u64 name, i32 target, const BCSComponentHandle*
+  sender, Payload* payload)` delivers one event. `name` is `FName(EventName)` (comparison index
+  and number). `target` is 0 for a global event; a targeted send passes an id read from its
+  `Target` object (+0x270). `sender` is the sending component's handle, the same 8 bytes
+  `BRLuauComponentLibrary:Get` returns, so the sender's `EventName` and `Target` can be read
+  from its component data.
+- **Context:** `reg` is the world's `UBRRegistry`. The Send gate reads it from a global (`0x986f430`)
+  that holds it only while the circuit simulation ticks and is 0 otherwise. The dispatcher
+  requires `reg+0x464 != 0` and `reg+0x460 != 3`. Both read 1 outside the tick too.
+- **Payload:** 8 wire values (0x28 bytes each) in an inline array (0x140 bytes), then a heap
+  pointer (+0x140, null while inline), count (+0x148) and capacity (+0x14c), then an int (+0x150)
+  the dispatcher fills in from the registry entry.
+- **Routing:** the sender handle is resolved first, and an invalid one ends the send. Its component
+  type's virtual at vtable +0x370 says whether the event is global. The registry key is
+  `(name, global ? 0xffffffff00000001 : scope << 32)`, with `scope` taken from the sender's grid
+  slot. So for a global event the key doesn't depend on which sender sent it. A map at `reg+0x3d0`
+  takes the key to an entry (0x48 bytes; `+0x40` is the id copied into the payload), and a map at
+  entry `+0x30` takes `target` to a list of receiver handles.
+- **Receiving:** for each receiver, `0x74b81c0(receiver data, resolved handle, payload)` appends to
+  a queue in the receiver's component data, past its reflected fields: `+0x228` is an id and
+  `+0x230` a TArray of pending events. On its next tick the receiver (`0x74b8540`) copies the
+  payload into `DataOut1..8` (`0x6f341a0` copies one wire value) and fires `ExecOut`.
+- **Send gate:** `SendCustomEvent` caches the name's FName at +0x198 and the target id at +0x1a0,
+  after its reflected fields (which end with `DataIn8`). The FName is built from `EventName` with
+  the engine's FName constructor (find-or-add). `Target` is a weak object pointer; the id comes
+  from a world subsystem lookup on the target object (`0x779ecc0(object + 0x270)`), so it isn't
+  a plain field. The gate resolves it as soon as the Target wire is made, without firing, and it
+  is 0 until then. Ids are stable across a restart.
+- **Payload ownership:** the caller builds the payload (`TArray<WireValue, TInlineAllocator<8>>`,
+  0x158 bytes, always 8 values; an unconnected input is a double 0), and destroys it after the
+  call. Receivers copy each value, taking their own reference to a string.
+- **Receiver queue:** a receiver keeps at most 64 pending events (the limit checked in the
+  enqueue) and plays one per tick; events past the limit are dropped for that receiver.
+
+How BR uses it (`BR.event.custom`, `on_custom`):
+
+- The bridge finds the dispatcher by its opening checks, the same shape in every build seen so
+  far with only the registry offsets changing: `cmpb $0, X(%rdi); je; cmpl $3, Y(%rdi); je;
+  test %rsi, %rsi; je` (one match in the executable's code), then steps back to the prologue
+  after the `int3` padding.
+- **Listening** is a detour on the dispatcher. It copies the name, target, sender and the 8 raw
+  values (plus each string's text, since a string value only points at it) into a ring of 4096
+  events, which each Lua state reads with its own cursor. The detour runs inside the circuit
+  tick, so Lua hears events at the start of the next engine tick.
+- **Sending** does what the dispatcher does once it has resolved a sender, so no gate is needed
+  (`__custom_event_post`). From the game thread, outside the circuit tick, with
+  `FindFirstOf("BRRegistry")`, it builds the key itself: `(name, 1, -1)` for a global event, or
+  `(name, 0, owner)` for a targeted one, since the scope a sender contributes is its brick's
+  owner index. The map at `reg+0x3d0` and each entry's target map are dense (entries
+  `0..Num-1` are all live), so they are scanned rather than hashed. Each receiver handle is
+  resolved and queued through the same two functions the dispatcher calls, whose addresses
+  the bridge reads from the dispatcher's call instructions after checking they are calls. A
+  targeted event's id is `BRLuauEntityLibrary:GetId(entity).ElementID`, the same id a Send gate
+  caches. The send is recorded for Lua listeners as the detour would. Strings are fresh
+  `WireString`s, and the bridge drops the payload's reference afterwards as `TSharedPtr` does
+  (controller vtable `{ DestroyObject, dtor, deleting dtor }`, atomic counts at +8 and +0xc), so
+  a string nobody received is freed.
+
+### Entity custom properties
+
+`CustomProperties` (`TMap<FWireString, FWireValue>`, +0x2b8 on both `BREntityActor` and
+`BrickGridDynamicActor`) is a dense compact map like the registry's: `Num` at +8, entries
+`0..Num-1` live from the data pointer, 0x38 bytes each (the key's 16 bytes, then the value).
+The Set/Get/Remove Custom Property gates and the applicator edit it. The applicator sends it
+as part of an entity changelist (`ServerCopyEntity` fills `Clipboard_Entity`, `ServerPasteEntity`
+applies it as a transaction of the owning player, so both need a `BRPlayerController` owner).
+In that changelist the map is: push field `CustomProperties` (tag 2), tags 16 and 4, then per
+entry tag 127 with the key's `WireString`, tag 25 with the value's wire kind (0 bool, 1 int,
+2 double, 7 string; the game leaves it out when the kind is already right), the value's leaf
+token (28 bool, 35 int64, 38 double, 42 `WireString`), and two pops (tag 3); then tag 5 and a
+pop. A leaf that doesn't match the kind stops the rest of the changelist.
+
+BR writes it without a player controller by appending a
+`BrickAction_ApplyChangelistToEntity` to a Luau transaction (`__tx_append`). The transaction
+(`FBRLuauTransaction`, 48 bytes) points at a `UBrickTransaction` at +0x20 (made by the first
+record, with a reference held through the object array) and is marked run at +0x28. Its
+actions are C++ structs with a vtable, built in place in an arena: transaction +0x40 first
+page, +0x48 current, +0x5a locked, +0x5c pages, +0x60 actions; a page is 0x7ff0 bytes with
+next and prev links, a u16 capacity (0x7fd8), bytes used and action count at +0x10..+0x14, a
+fix-up flag at +0x16, data from +0x18, and a table of u16 action offsets growing down from
+the end of the data. After filling an action, a record function calls its fourth virtual and
+sets the page's fix-up flag when it returns true.
+
+## Permissions
+
+Permissions are gameplay tags under `BR.Permission`. A `BRPermissionsRole` holds `Permissions`
+(`BRRoleData_PermissionState { Tag, State }`, `EBRSetPermission`: Allowed 0, Forbidden 1,
+Unchanged 2) and `GameplayPermissionOverrides` (by name). Roles list lowest first from
+`PermissionsManager:GetAllPermissionsRoles()`: Default, Moderator, Admin, Owner. A character
+also carries `TempGameplayPermissions` (`TArray<FGameplayTag>`), which the Set Temp Permission
+gate fills.
+
+Every check, from the server's tools, chat and the UFunction alike, is
+`BRPlayerState::HasPermission(FGameplayTag)`, which returns a bool. The tag travels by value in
+one register (it is an FName). Tags the game marks as gameplay permissions take a path that
+asks the owner flag and the role, then a per-player override returning allowed, forbidden or
+unchanged. Every other tag asks the roles. The function isn't reflected. The UFunction's native
+thunk (`UFunction+0xd8`, `GetFunc()`) reads the parameter and calls it, and that call is the
+first direct `call rel32` in the thunk, which is generated code and keeps its shape between
+builds.
+
+The bridge detours it. Overrides are kept per player with a weak object pointer, so a
+PlayerState that is destroyed and whose memory is reused can't inherit them. The tag is
+matched, then each parent by trimming at the last dot. A trace mode records each check with
+its result.
+
+## Game mode delegates
+
+`BRGameModeBase` broadcasts its state through dynamic multicast delegates: `OnPlayerJoined`,
+`OnPlayerLeft`, `OnPreRespawnPlayer`, `OnRespawnPlayer`, `OnPlayerSwitchTeam`,
+`OnPlayerCannotRespawnChanged`, `OnRoundStart`, `OnRoundEnd`, `OnRoundWon`, `OnRoundResolved`,
+`OnReset`, `OnSessionStart`, `OnDestructableMemberTakeDamage` and
+`OnDestructableMemberDestroyed`. Their signatures are `GameModeDelegate_*__DelegateSignature`
+functions in `/Script/Brickadia` (`OnRoundWon`: `Result` `EBRRoundEndResult` at 0, `Players`
+and `Teams` TArrays at 8 and 24; `OnPlayerSwitchTeam`: `State`, `OldTeam`, `NewTeam`). Few are
+bound by anything on a plain server, so there is nothing to piggyback on.
+
+A broadcast calls each bound object's UFunction through `ProcessEvent` with the signature's
+parameters. The bridge binds a dummy object per binding (a `SceneComponent` made in the
+`/Script/Engine` package, transient, in the root set so the garbage collector keeps it) by
+`ExecuteUbergraph`, which every object has, using the engine's own
+`FMulticastDelegateProperty::AddDelegate`. Its ProcessEvent pre-callback recognises the dummy,
+passes the parameters on and prevents the call, so nothing runs on the dummy. A `NewObject` with
+no outer asserts (`InOuter || (InClass == UPackage::StaticClass() && ...)`), and UE4SS's
+`StaticFindObject` won't find `/Engine/Transient` by that path, hence the class's own package.
+
+`OnRespawnPlayer` fires with the new character already possessed, on first spawn and on
+respawn. Possession itself (`Controller:ReceivePossess`, `Pawn:ReceivePossessed`) never reaches
+`ProcessEvent` here. Bots don't log in, so `OnPlayerJoined` doesn't fire for them, but
+`OnPlayerLeft` does.
 
 ## Property changelists
 
@@ -202,7 +338,7 @@ block from the game's allocator (GMalloc). The game binary exports `operator new
 are plain `malloc`/`free`; `__game_alloc` and `__game_free` go through UE4SS's `FMemory`
 instead. The object is `{ TArray<char>
 text (UTF-8, NUL-terminated, num counts the NUL), uint32 hash, uint32 hashed }`; equality
-compares length and `strcmp`, and the hash fields start at zero. `BR.wirestring` builds one with
+compares length and `strcmp`, and the hash fields start at zero. `BR.wire.wirestring` builds one with
 `__game_alloc` and the controller vtable read off a WireString the game made
 (`BRLuauAssetLibrary:GetAssetName`). String wire values (`EWireKind` 7) carry a WireString as
 their payload.
@@ -272,7 +408,7 @@ Notes from testing them:
   or a raw pointer) is skipped, so it is wired from `Internal_ReadBrickGrid` (whose
   `BrickGrid` output is the weak pointer of its own grid). Wires between grids connect and
   carry both exec and data. Kind 27 (`StrongObject`) with a raw pointer crashed the server.
-- Exec signals (custom events, gate execs) stay in native code. `BR.on_custom_event` turns them
+- Exec signals (custom events, gate execs) stay in native code. `BR.event.on_custom` turns them
   into data: the receiver's `ExecOut` drives a Variable Increment gate, whose variable is read
   every tick from component storage, along with the receiver's `DataOut1..8`.
 
@@ -295,6 +431,84 @@ Notes from testing them:
   them unless the player is connected. They have not been run against a real client yet.
 - UFunction **array return values** (`GetAllTeams`, `GetRoles`) don't come back through UE4SS;
   use counts and getters (`GetNumTeams` + `GetTeam(i)`) or array properties.
+
+## Bots
+
+A bot is a spawned `BP_PlayerController`: no `NetConnection`, a real PlayerState, its own set of
+builder tools (`PlayerState.PlacerTool`, and `BRTool_*` actors whose owner is the controller).
+
+- **Removing one:** `K2_DestroyActor` on the controller returns and leaves it standing (still
+  valid, not being destroyed, still in `PlayerArray`). `SetLifeSpan(0.01)` takes it, its
+  PlayerState and its tools down on the next tick.
+- **Tools:** each tool's server RPC (`ServerPlaceSimpleBrickVolume`, `ServerHammerBrick`,
+  `ServerPaintBrick`, `ServerSetVisible`, `ServerConnectOrDisconnectComponentWire`) works called
+  from Lua on the bot's tool, without wielding it. The checks they run, in order, for the Placer:
+  the placement context, the brick asset, the material (`MaterialIndex` indexes
+  `UBRGameInstance.BrickMaterials`, whose first three, hidden and ghost, are not
+  `bUsableForPainting`), the team's gameplay permission (`BR.Permission.Building.Placer`; a game
+  mode team that lists only the sub-permissions refuses), a per-player volume limit, then a
+  transaction. `ColorAndAlpha`'s alpha byte is the material alpha (0 to 5); 255 makes every brick
+  `BricksInvalid`. Refusals are sent to the controller as status messages (the middle print),
+  which a controller with no connection never shows. What happened is left in
+  `BrickTransactionManager.LastTransactionReport`.
+- **Wires:** `FBCSWirePortRef` is `{ BCSComponentHandle (8 bytes), port FName }`; the component
+  handle is what `BRLuauComponentLibrary:Get` returns as `OutComponent`, not the brick handle.
+- **Movement (as a client):** a player controller is never local on a dedicated server, so
+  `AddMovementInput` on its character does nothing; the server only moves it from the client's
+  `ServerMove*` RPCs. Calling `Character:ServerMoveNoBase` works, after
+  `PlayerController:ServerAcknowledgePossession(character)` (until a client acknowledges its
+  pawn, `NotifyServerReceivedClientData` zeroes the move's acceleration). Timestamps must rise;
+  a step of more than half of `MinTimeBetweenTimeStampResets` (240 s) forward is dropped as a
+  stale move. `CompressedMoveFlags`: `0x01` jump, `0x02` crouch, `0x04` and `0x10` fly, `0x20`
+  sprint. But weapon input (`PendingWeaponSimInputs`: desired slot, `EBRWeaponInputKeys`) only
+  travels in the packed move (`ServerMovePacked`), and is rebuilt from every move, so a bot
+  driven this way can't use weapons.
+- **Driving with an AI controller:** an `AIController` possessing the bot's character is local,
+  so movement input, `SetControlRotation`, `Crouch`, `CharacterMovement:SetSprinting`,
+  `SetDesiredMainInventoryIndex` (switch weapons) and `Weapon:SetPredictedWeaponInput(key,
+  pressed)` (fire 1, reload 4) all apply directly. Possession leaves the character without a
+  PlayerState; setting `character.PlayerState` and `PlayerState.PawnPrivate` back keeps team,
+  damage and the player helpers working, but then `IsPlayerControlled()` is true and the game
+  casts the controller to its player controller, failing into a deliberate null read (a crash,
+  seen on equipping and on death). Setting `PlayerState.bIsABot` makes `IsPlayerControlled()`
+  false: no crash. Deaths still fire `MulticastHandleDeath`, with no killer controller (the cause,
+  a projectile, carries the shooter's `InstigatorState`), and the game doesn't respawn the bot. Pickups
+  (`HandlePickupAttempt`) only arm a character a player controller holds; possessing it back
+  for the pickup and handing it over again is fine with `bIsABot` set. A character possessed by
+  a different controller must carry the victim's PlayerState for damage to land (its team).
+- **Attaching grids and entities to a character:** freeze them first. `K2_AttachToActor` (to the
+  capsule) tracks exactly on the server, but clients see the grid trail loosely behind, and a
+  bot carrying one gets pushed around by it. `K2_AttachToComponent(character.Mesh, socket)`
+  (e.g. `Part_Head`) holds rigidly on a real client.
+- **Interaction:** `ServerMaybeStartInteract` on the bot's character presses buttons and flips
+  switches. A placed `B_Button` carries `Component_Internal_AnimatedButton` (`bHeld`,
+  `PressCount` while held), a `B_Switch_Test` `Component_Internal_AnimatedSwitch` (`bEnabled`),
+  not the `Component_Button` / `Component_Switch` types their ports are documented under.
+- **Jumping:** `ACharacter:Jump()` holds the jump key, and an AI-driven character keeps
+  jumping on every landing until `StopJumping()`; the driver releases it a tick later.
+- **Sprinting:** `UBRCharacterMovementComponent` keeps two unreflected bytes after
+  `OnControlModeChanged` (+0x10): `+0x13` is sprinting (what `GetSprinting` reads, along with
+  the team rule allowing it) and `+0x14` wants to sprint (what `SetSprinting` writes). Each
+  movement update copies want into sprinting, except with tap-to-sprint
+  (`BRGameSettingsBase_Controls.bTapToSprint`, on in a server's defaults): a sprint then only
+  ends when the character slows down or moves against its facing. `BR.bot.sprint(ps, false)`
+  clears the sprinting byte itself.
+- **Sitting:** `ABRCharacter:IsSitting()` is a seat brick only. The Sit emote shows as
+  `BP_Emote_Sit_C` in `ActiveEmotes`. An emote stays there after `ServerStopEmoting` until the
+  owning client reports `ServerFinishEmote`, which a bot never does.
+
+## Voice
+
+Voice chat has no UFunctions. Each client connection has a `UBRVoiceChannel` (channel type
+`BRVoice`); the controller keeps it at `+0x13d8`. A client sends `{ u16 length, u64 position,
+u32 burst, Opus frame }`, and the channel's `ReceivedBunch` (vtable slot 91) passes it to the
+routing function `route(UWorld*, ABRPlayerState* talker, const TArray<uint8>& frame, u64
+position, u32 burst)`, which a listen server's own encoder also calls. It checks the talker's
+voice chat permission, then for each listener in earshot writes `{ u32 talker PlayerId, u16
+length, u64 position, u32 burst, frame }` down their voice channel. The client finds the talker
+by PlayerId, checks mutes, and plays the frame through the voice component on the talker's
+character (`+0x6f8`). From the encoder: a frame is one `opus_encode` output of at most 512
+bytes; position counts samples, advancing by the frame size; burst counts talk bursts.
 
 ## Roles and chat
 
@@ -324,7 +538,7 @@ Channel 0 or targets 0 hit nothing, which is why earlier zeroed attempts missed.
 ## Found on a live server
 
 - **The stand-in's owner entry has an all-zero GUID** and a blank name, which is what players see
-  as the owner of bricks placed with `BR.owner_index()`. Deleting them in a transaction run by
+  as the owner of bricks placed with `BR.player.owner_index()`. Deleting them in a transaction run by
   the stand-in reports `BricksBlocked`; the same transaction run by a real player (the server
   owner) deletes them. Registering a named owner with
   `ABRGameStateBase:IdOrRegisterBrickOwner_NotPresent({ OwnerGuid, OwnerName, OwnerDisplayName })`
@@ -334,7 +548,7 @@ Channel 0 or targets 0 hit nothing, which is why earlier zeroed attempts missed.
 - **The stand-in counts as a player.** Its controller has a PlayerState, so the server's player
   count (and the server list) is one higher than the real players.
 - **A builder needs `SetMaterial`.** Bricks from a builder that never had it are reported visible
-  by the server but drawn as nothing by clients; `BR.builder` always sets one.
+  by the server but drawn as nothing by clients; `BR.brick.builder` always sets one.
 - **Procedural bricks have a size limit.** A half-extent of 80 (16 studs) placed; 90 was refused.
   The exact limit wasn't pinned down.
 - **`BRLuauGridLibrary:InBox(grid, min, max, maxResults)`** lists the bricks in a box. Its

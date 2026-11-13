@@ -68,6 +68,24 @@ function M.call(plugin, event, args, callback)
     return id
 end
 
+--- Call a handler another Lua mod registered with Omegga.handle (or one in this
+--- mod): callback(ok, result) runs later on the game thread, with what the
+--- handler returned, or false and the error. Mods are separate Lua states, so
+--- the call goes through the ue4ss plugin, which knows which mod has the
+--- handler. Returns the call id.
+---
+---   Omegga.invoke("economy.balance", { player_id }, function(ok, coins) ... end)
+function M.invoke(name, args, callback)
+    local list = { name }
+    for _, a in ipairs(args or {}) do list[#list + 1] = a end
+    return M.call("ue4ss", "call", list, function(ok, reply)
+        if not callback then return end
+        if not ok then return callback(false, reply) end
+        if type(reply) == "table" and reply.ok == false then return callback(false, reply.error) end
+        callback(true, type(reply) == "table" and reply.result or reply)
+    end)
+end
+
 local handlers = {}
 --- Make fn callable from plugins: emitPlugin('call', name, ...args) returns
 --- { ok = true, result = fn(...args) } (or { ok = false, error = ... }). fn runs on
@@ -75,6 +93,75 @@ local handlers = {}
 function M.handle(name, fn)
     handlers[name] = fn
     send(0, { t = "register", name = name })
+end
+
+--- Serve HTTP: requests to /api/v1/plugin/ue4ss<path> on omegga's web server with
+--- this method ("GET", "POST", ..., or "*" for any) call fn(request) on the
+--- game thread. A path ending in "/*" also takes everything below it; of
+--- several matching routes the longest path wins.
+---
+--- request: { method, path, query, headers, body, user, ip }; user is the web
+--- UI user ({ id, username }) or nil. A route needs a web UI login unless
+--- opts.public, when it must check for itself who may use it (a shared secret
+--- in a header, say).
+---
+--- fn returns a string (the body, as text), a table with status, headers and
+--- body (a table body goes out as JSON), any other table (a JSON body), or
+--- nothing (204). An error answers 500. Like handle(), a later route with the
+--- same method and path wins, from any mod.
+---
+---   Omegga.route("GET", "/players", function(req) return { count = #BR.player.list() } end)
+function M.route(method, path, fn, opts)
+    assert(type(method) == "string" and not method:find("%s"), "a route method is a word like GET")
+    assert(type(path) == "string" and path:sub(1, 1) == "/" and not path:find("%s"), "a route path starts with / and has no spaces")
+    M.handle(((opts and opts.public) and "http-public:" or "http:") .. method:upper() .. " " .. path, fn)
+end
+
+--- Answer an omegga event for a command a mod declares in its doc.json, like
+--- an omegga plugin's:
+---
+--- "cmd:<name>" (doc.json `commands`) runs fn(player_name, ...words) on the
+--- game thread when a player types /<name> in chat. BR.command.register wraps
+--- it with the player's PlayerState, permissions and replies.
+---
+--- "consolecmd:<name>" (doc.json `consoleCommands`) runs fn(...args) when
+--- someone types /<name> in omegga's console, and what fn returns (text, a
+--- list of lines, or a table) is printed there.
+---
+---   Omegga.on("consolecmd:arena", function(action) return "arena " .. tostring(action) end)
+function M.on(event, fn)
+    local kind, name
+    if type(event) == "string" then kind, name = event:match("^(%a+):([%w_%-]+)$") end
+    assert((kind == "cmd" or kind == "consolecmd") and name, 'Omegga.on takes "cmd:<name>" or "consolecmd:<name>"')
+    M.handle(kind .. ":" .. name:lower(), fn)
+end
+
+-- The mod this Lua state belongs to: the first script on the stack under
+-- Mods/<name>/Scripts/ (or mods/, as the bridge's own lives; shared modules,
+-- like this one, are elsewhere).
+local function mod_name()
+    for level = 2, 30 do
+        local info = debug.getinfo(level, "S")
+        if not info then break end
+        local name = info.source and info.source:match("[/\\][Mm]ods[/\\]([^/\\]+)[/\\]Scripts[/\\]")
+        if name and name ~= "shared" then return name end
+    end
+end
+M.mod = mod_name()
+
+-- Run Lua sent from omegga in this mod's state, as the bridge's exec does in
+-- its own: an expression's value, or what a block returns.
+local function exec(source)
+    source = tostring(source)
+    local chunk, err = load("return " .. source, "=exec")
+    if not chunk then chunk, err = load(source, "=exec") end
+    if not chunk then error("compile: " .. tostring(err), 0) end
+    local results = table.pack(xpcall(chunk, debug.traceback))
+    if not results[1] then error(tostring(results[2]), 0) end
+    local values = {}
+    for i = 2, results.n do values[#values + 1] = M.plain(results[i]) end
+    if #values <= 1 then return values[1] end
+    return values
 end
 
 local watches = {}
@@ -104,12 +191,24 @@ function M.unwatch(name)
     watches[name] = nil
 end
 
+local connect_listeners = {}
+--- Run fn each time a plugin connects to the bridge (after omegga or the game
+--- restarts). Keyed, so a module loaded again replaces its listener rather
+--- than adding a second.
+function M.on_connect(key, fn)
+    connect_listeners[key] = fn
+end
+
 local function on_message(conn, text)
     local ok, message = pcall(json.decode, text)
     if not ok or type(message) ~= "table" then return end
     if message.t == "connected" then
         -- a plugin that (re)connects learns which handlers live here
         for name in pairs(handlers) do send(conn, { t = "register", name = name }) end
+        for key, fn in pairs(connect_listeners) do
+            local called, err = pcall(fn)
+            if not called then print("[omegga] on_connect " .. key .. ": " .. tostring(err) .. "\n") end
+        end
     elseif message.t == "reply" then
         local callback = pending[message.id]
         pending[message.id] = nil
@@ -132,5 +231,8 @@ local function on_message(conn, text)
 end
 
 __bridge_listen(M.id, on_message)
+
+-- a REPL into this mod: the plugin's exec with a mod name lands here
+if M.mod then M.handle("exec@" .. M.mod, exec) end
 
 return M

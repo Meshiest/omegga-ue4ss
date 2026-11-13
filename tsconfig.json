@@ -3,13 +3,15 @@
     "target": "es2022",
     "module": "commonjs",
     "lib": ["es2022"],
-    "outDir": "dist",
-    "rootDir": "src",
+    "noEmit": true,
     "strict": true,
     "noImplicitOverride": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "types": ["node"]
+    "types": ["node"],
+    "paths": {
+      "omegga": ["./omegga.d.ts"]
+    }
   },
-  "include": ["src"]
+  "include": ["omegga.main.ts", "src"]
 }

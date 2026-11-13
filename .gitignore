@@ -1,4 +1,7 @@
 node_modules/
+.build/
+omegga.d.ts
+# built by plugin versions before 0.3.0
 dist/
 build/
 runtime/

@@ -51,6 +51,9 @@ mkdir -p "$root/runtime/BrickadiaBridge"
 install -m 755 "$lib/libUE4SS.so" "$root/runtime/libUE4SS.so"
 install -m 755 "$lib/main.so" "$root/runtime/BrickadiaBridge/main.so"
 install -m 644 "$root/LICENSE-UE4SS" "$root/runtime/LICENSE-UE4SS"
+# debug info is most of libUE4SS.so's size (155 MB to 25 MB), and every server
+# downloads it; the symbol tables stay, so crash backtraces still name functions
+strip --strip-debug "$root/runtime/libUE4SS.so" "$root/runtime/BrickadiaBridge/main.so"
 # the plugin uses a local build as it is and never downloads over it; delete
 # runtime/ to go back to the published binaries
 touch "$root/runtime/.local"
