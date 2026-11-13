@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { MetricCounter, MetricGauge, MetricHistogram, PluginMetricLabels, PM } from 'omegga';
+import type { MetricCounter, MetricGauge, MetricHistogram, PluginMetricLabels, PluginMetrics } from '../src/metric-types';
 import { LuaMetrics, parseUpdate } from '../src/luametrics';
 
 test('parses updates and refuses bad ones', () => {
@@ -23,7 +23,7 @@ test('applies updates to the plugin registry', () => {
     inc: () => {}, dec: () => {}, remove: () => {}, collect: () => {}, reset: () => {},
   };
   const histogram: MetricHistogram = { observe: () => {}, startTimer: () => () => 0, reset: () => {} };
-  const pm: PM = { enabled: true, counter: () => counter, gauge: () => gauge, histogram: () => histogram };
+  const pm: PluginMetrics = { enabled: true, counter: () => counter, gauge: () => gauge, histogram: () => histogram };
   const warnings: unknown[][] = [];
   const m = new LuaMetrics(pm, (...a) => warnings.push(a));
   m.apply({ kind: 'counter', op: 'inc', name: 'kills', value: 1, labels: { team: 'red' } });

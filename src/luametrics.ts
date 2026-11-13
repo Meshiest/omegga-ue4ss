@@ -1,4 +1,4 @@
-import type { MetricCounter, MetricGauge, MetricHistogram, PluginMetricLabels, PM } from 'omegga';
+import type { MetricCounter, MetricGauge, MetricHistogram, PluginMetricLabels, PluginMetrics } from './metric-types';
 
 /**
  * One metric update from Lua (BR.metrics), sent as the Lua event "metric".
@@ -79,7 +79,7 @@ export class LuaMetrics {
   readonly #handles = new Map<string, Handle>();
 
   constructor(
-    private readonly metrics: PM | undefined,
+    private readonly metrics: PluginMetrics | undefined,
     private readonly warn: (...args: unknown[]) => void,
   ) {}
 
