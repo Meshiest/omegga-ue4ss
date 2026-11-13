@@ -111,8 +111,11 @@ On a test server with a region you don't own, and one you do:
 - [ ] **Join event and gating**, permission overrides shown in the client's UI, spectator mode,
   bot voice playback and voice recording (carried over from earlier lists). On CL16507
   `BR.mod.on_join` fired for a real client rejoining (chat reaches a joining player at once);
-  refusing a real join, the permission UI and voice not tried. Spectator follows a target
+  refusing a real join and the permission UI not tried. Spectator follows a target
   (see set_view and spectate_target).
+  Voice: `BR.voice.say` spoken as a real player reaches others (heard, though "very grainy"
+  and loud at a -8 dB peak); spoken as a bot it sends every frame with no error and nobody
+  hears anything, so bot voice is broken. Recording not tried.
 
 ## World and environment
 

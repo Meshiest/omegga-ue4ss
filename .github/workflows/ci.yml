@@ -30,7 +30,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          # BR.db's tests need node:sqlite's setAuthorizer, which Node 22 and 23 lack
+          node-version: 25
       - run: npm ci --no-audit --no-fund
       - run: npm test
 
