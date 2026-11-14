@@ -22,8 +22,14 @@ function world.ready()
     return single("GlobalBrickGridActor") ~= nil
 end
 
---- Every dynamic brick grid entity in the world.
-function world.grids() return FindAllOf("BrickGridDynamicActor") or {} end
+--- Every dynamic brick grid entity in the world (destroyed ones left out).
+function world.grids()
+    local out = {}
+    for _, g in ipairs(FindAllOf("BrickGridDynamicActor") or {}) do
+        if I.alive(g) then out[#out + 1] = g end
+    end
+    return out
+end
 
 --- Spawn an actor of `class` (a UClass) in the game world, at the origin.
 function world.spawn(class)

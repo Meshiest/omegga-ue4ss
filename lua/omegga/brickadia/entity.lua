@@ -6,7 +6,15 @@ local entity = {}
 
 -- Entities (physics objects: balls, wheels, vehicles) are BREntityActor actors.
 
-function entity.list() return FindAllOf("BREntityActor") or {} end
+--- Every live entity actor. Destroyed ones are left out: FindAllOf keeps
+--- listing an actor until the garbage collector runs.
+function entity.list()
+    local out = {}
+    for _, e in ipairs(FindAllOf("BREntityActor") or {}) do
+        if I.alive(e) then out[#out + 1] = e end
+    end
+    return out
+end
 
 -- Entity tags: a WireString property `EntityTag` on entities (BREntityActor) and
 -- on dynamic brick grids (BrickGridDynamicActor), set in game from the entity's

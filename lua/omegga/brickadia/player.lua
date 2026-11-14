@@ -173,7 +173,11 @@ function player.kill(ch) BR.player.set_health(ch, 0) end
 
 --- Respawn a player (their old character is removed).
 function player.respawn(ps)
+    local old = BR.player.character(ps)
     assert(BR.player.controller(ps), "no controller"):RestartPlayer(true)
+    -- a bot's character belongs to its AI controller, so the restart leaves it
+    -- standing without a player (clients show it as "Player Name")
+    if old and old:IsValid() and BR.bot.is_bot(ps) and BR.player.character(ps) ~= old then old:K2_DestroyActor() end
 end
 
 -- Spawning and spectating, through the controller's own replicated setters.

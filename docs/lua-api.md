@@ -146,7 +146,7 @@ These raise a Lua error instead of returning an invalid object.
 | | |
 |--|--|
 | `BR.brick.asset(name)` | a brick asset by name: `"PB_DefaultBrick"`, `"B_Bot_Spawn_Point"`, `"B_1x1_Gate_Expr_LogicalAND"` |
-| `BR.brick.builder(opts)` | builder bytes. `opts`: `asset`, `size = {x, y, z}` (procedural bricks; half-extents in brick units), `color = {r, g, b, a}`, `material` (a `BR.brick.MATERIAL` name such as `"Glass"`, or its number; default `"Plastic"`), `alpha` (default 5), `grid`, `owner` (brick owner index), `visible = false`, `collision = false` |
+| `BR.brick.builder(opts)` | builder bytes. `opts`: `asset`, `size = {x, y, z}` (procedural bricks; half-extents in brick units, multiples of 5 for x and y and of 2 for z, at most 4000; the game turns any other size into the asset's default, a 2x4, so the builder raises an error instead), `color = {r, g, b, a}`, `material` (a `BR.brick.MATERIAL` name such as `"Glass"`, or its number; default `"Plastic"`), `alpha` (default 5), `grid`, `owner` (brick owner index), `visible = false`, `collision = false` |
 | `BR.brick.MATERIAL` | `Plastic`, `Glass`, `TranslucentPlastic`, `Glow`, `Metal`, `Hologram` (`EBrickMaterial`) |
 | `BR.brick.place(builder, x, y, z, orientation?)` | handle, or nil when refused. Immediate, no trust check, no undo. `orientation` defaults to `BR.brick.Z_UP` |
 | `BR.brick.info(handle)` | `{ valid, asset, position = {x, y, z} }`, or `{ valid = false }` |
@@ -484,7 +484,7 @@ entity (a brick grid: a contraption, vehicle or other dynamic grid).
 | `BR.event.custom(name, opts?)` | returns `ev`, whose `ev.send(...)` sends the event `name` |
 | `BR.event.on_custom(name, fn, opts?)` | `fn(data, info)` for every event named `name`; returns a function that stops it |
 | `BR.event.on_any_custom(fn)` | `fn(data, info)` for every custom event, any name, global or targeted |
-| `BR.world.grids()` | every dynamic brick grid entity |
+| `BR.world.grids()` | every dynamic brick grid entity, destroyed ones left out |
 | `BR.brick.grid(handle)` | the grid a brick is on (the global grid or an entity) |
 
 | Option | `custom` | `on_custom` |
@@ -1333,7 +1333,7 @@ Entities (balls, wheels, vehicles) are `BREntityActor` actors. Tested on Release
 
 | | |
 |--|--|
-| `BR.entity.list()` | every entity actor |
+| `BR.entity.list()` | every entity actor, destroyed ones left out |
 | `BR.entity.spawn(class, x, y, z, opts?)` | `class` is a name (`"Entity_Ball"`, a `BR.EntityClass`) or a class; world units; `opts`: `frozen`, `owner` (default `BR.player.owner_index()`) |
 | `BR.entity.class(name)` | the entity class a name resolves to |
 | `BR.entity.id(entity)` / `BR.entity.by_id(id)` | an entity's transaction id / the entity with that id, or nil |
@@ -1344,7 +1344,7 @@ Entities (balls, wheels, vehicles) are `BREntityActor` actors. Tested on Release
 | `BR.entity.gravity_direction(target)` / `BR.entity.set_gravity_direction(target, {x, y, z})` | a character's gravity (`target`: PlayerState or character), as the Set Gravity Direction gate; `{0, 0, -1}` is normal. Entities and grids only have gravity on or off |
 | `BR.entity.visible(e)` / `BR.entity.set_visible(e, visible)` | |
 | `BR.entity.owner(e)` | owner index |
-| `BR.entity.delete(e)` | |
+| `BR.entity.delete(e)` | removes it, as `tx.delete_entity` does. Its id reads 0 at once; the actor is destroyed but `FindAllOf` still lists it until the garbage collector runs, so use `BR.entity.list` |
 | `BR.entity.tag(e)` / `BR.entity.set_tag(e, text)` | an entity's or dynamic grid's tag (the game's Entity Tag), or nil |
 | `BR.entity.properties(e)` / `BR.entity.property(e, key)` | an entity's or dynamic grid's custom properties (set by the Set Custom Property gate or the applicator), `{ [key] = value }`, or one of them |
 | `BR.entity.set_properties(e, props)` / `BR.entity.set_property(e, key, value)` | replace them all, or set one (`nil` removes it), as the server: booleans, numbers (an integer stays an integer) and strings. Applied as the applicator's paste is, an entity changelist in a transaction |
@@ -1985,7 +1985,7 @@ BR.region.clear("plot-12", { asset = "B_2x2_Cannon" })   -- or one kind of brick
 
 | | |
 |--|--|
-| `define(name, opts)` | create or replace a region: `box = { min, max }` or `boxes = { ... }` (grid units), `owners` (player ids or PlayerStates), `build` (`"owners"` by default, `"nobody"`, `"everyone"`), `copy` (anyone may select and copy there), `ban_assets`, `ban_components`, `message` (what a refused player sees) |
+| `define(name, opts)` | create or replace a region: `box = { min, max }` or `boxes = { ... }` (grid units), `owners` (player ids or PlayerStates), `build` (`"owners"` by default, `"nobody"`, `"everyone"`), `copy` (anyone may select and copy there), `permission` (a [BR.perm](#permissions) permission whose holders build there as owners do; bans still apply), `ban_assets`, `ban_components`, `message` (what a refused player sees) |
 | `get(name)`, `list()`, `remove(name)` | |
 | `add_owner(name, ps)`, `remove_owner(name, ps)` | a player id or PlayerState |
 | `at({x, y, z})` | the regions containing a point |

@@ -50,7 +50,7 @@ function label.create(position, opts)
     local o = {}
     for k, v in pairs(opts) do o[k] = v end
     o.billboard = o.billboard or "full"
-    local b = BR.brick.builder({ size = { 1, 1, 1 }, visible = false, collision = false })
+    local b = BR.brick.builder({ size = { 5, 5, 2 }, visible = false, collision = false })
     local h = assert(BR.brick.place(b, position[1], position[2], position[3]), "the label's brick was refused there")
     BR.brick.transaction(BR.player.server(), function(tx) tx.attach(BR.brick.id(h), BR.component.type(TYPE)) end)
     local f = fields(o)

@@ -24,7 +24,8 @@ end
 brick.MATERIAL = { Plastic = 0, Glass = 1, TranslucentPlastic = 2, Glow = 3, Metal = 4, Hologram = 5 }
 
 --- A BRLuauBuilder as raw bytes. opts: asset (name), size {x,y,z} (procedural
---- bricks only), color {r,g,b,a}, material (a BR.brick.MATERIAL name or number,
+--- bricks only: half sizes, multiples of 5 for x and y and of 2 for z; anything
+--- else is an error), color {r,g,b,a}, material (a BR.brick.MATERIAL name or number,
 --- default Plastic), alpha (material alpha, default 5), grid (actor), owner
 --- (brick owner index, default BR.brick.PUBLIC), visible, collision.
 function brick.builder(opts)
@@ -38,7 +39,16 @@ function brick.builder(opts)
     local ctx = { WorldContextObject = BR.raw.ptr(BR.world.context()) }
     set("SetAsset", "NewAsset", BR.raw.ptr(BR.brick.asset(opts.asset or "PB_DefaultBrick")))
     set("SetGrid", "NewGrid", BR.raw.ptr(opts.grid or BR.world.global_grid()))
-    if opts.size then set("SetSize", "NewSize", BR.raw.ivec(table.unpack(opts.size))) end
+    if opts.size then
+        set("SetSize", "NewSize", BR.raw.ivec(table.unpack(opts.size)))
+        -- the game drops a size it doesn't allow and the brick comes out as the
+        -- asset's default (a 2x4 for PB_DefaultBrick), so say so instead
+        local got = BR.raw.call(lib, "BRLuauBuilderLibrary", "GetSize", { Self = self })
+        if not BR.raw.bool(got.ReturnValue) then
+            error(string.format("brick size {%s} was refused: procedural half sizes are multiples of 5 for x and y and of 2 for z, at most 4000",
+                table.concat(opts.size, ", ")), 2)
+        end
+    end
     local c = opts.color or { 255, 255, 255, 255 }
     -- FColor is stored B, G, R, A
     set("SetColor", "NewColor", string.pack("BBBB", c[3], c[2], c[1], c[4]))

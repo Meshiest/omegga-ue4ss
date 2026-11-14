@@ -95,6 +95,17 @@ end
 
 local function cdo(name) return StaticFindObject(SCRIPT .. "Default__" .. name) end
 
+-- Whether a brick is on the world grid. Bricks on dynamic grids (vehicles,
+-- contraptions) have positions in their grid's own space, near its origin, so
+-- checking them against regions would refuse a car anywhere by the region at
+-- the world's origin; they aren't covered.
+local function on_world_grid(h)
+    local g = BR.brick.grid(h)
+    if not valid(g) then return true end
+    local w = BR.world.global_grid()
+    return __addr(g) == __addr(w) or __addr(g) == __addr(w.BrickGridComponent)
+end
+
 --- The box a brick takes up (grid units), from its position, size and
 --- orientation. The handle must be valid.
 local function brick_box(h)
@@ -135,6 +146,12 @@ end
 local function bypassing(ps)
     if S.bypassing[__addr(ps)] then return true end
     local ok, has = pcall(BR.perm.has, ps, BYPASS)
+    return ok and has
+end
+
+-- a region's own permission: its holders build there as owners do
+local function has_permission(ps, name)
+    local ok, has = pcall(BR.perm.has, ps, name)
     return ok and has
 end
 
@@ -192,6 +209,7 @@ local function allows(ps, box, action)
                 local ok = r.build == "everyone"
                     or (r.build ~= "nobody" and owners_of(r)[id])
                     or (action == "select" and r.copy)
+                    or (r.permission ~= nil and has_permission(ps, r.permission))
                 if not ok then return false, name end
                 break
             end
@@ -286,7 +304,7 @@ local PLACER = SCRIPT .. "BRTool_Placer:"
 local function offsets(fn)
     local l = I.layout(PLACER .. fn)
     local function at(name) return assert(l[name], fn .. " has no parameter " .. name).offset end
-    return { position = at("Position"), orientation = l.Orientation and l.Orientation.offset, instance = at("InstanceSize"),
+    return { context = l.Context and l.Context.offset, position = at("Position"), orientation = l.Orientation and l.Orientation.offset, instance = at("InstanceSize"),
         spacing = at("InstanceSpacing"), volume = at("VolumeSize"), signs = at("VolumeSigns"), mirror = at("bMirrorMode"),
         brick_type = l.BrickType and l.BrickType.offset }
 end
@@ -438,10 +456,23 @@ local function after_placing(key)
     if p then check_placed(p.ps, p.before, p.box, p.grids) end
 end
 
+-- Whether a placement lands on the world grid. FBRPlacementContext: Type@0
+-- (EBRPlacementContextType: ExistingBrickGrid 0, NewBrickGrid 1,
+-- JointConnectedBrickGrid 2), ExistingBrickGrid@8. On another grid the
+-- position is in that grid's own space, so it isn't checked (see on_world_grid).
+local function places_on_world(p, at)
+    if not at.context then return true end
+    if p:byte(at.context + 1) ~= 0 then return false end
+    local g = BR.raw.obj(p:sub(at.context + 9, at.context + 16))
+    if not valid(g) then return true end
+    return __addr(g) == __addr(BR.world.global_grid().BrickGridComponent)
+end
+
 local function brick_volume(tool, p)
     layouts()
     local ps = BR.player.of(tool)
     if not ps or bypassing(ps) then return nil end
+    if not places_on_world(p, BRICK_VOLUME) then return nil end
     local asset = BR.raw.obj(p:sub(BRICK_VOLUME.asset + 1, BRICK_VOLUME.asset + 8))
     local size = { string.unpack("<i4i4i4", p, BRICK_VOLUME.size + 1) }
     if size[1] == 0 and size[2] == 0 and size[3] == 0 then size = (valid(asset) and asset_half(asset)) or { 5, 5, 6 } end
@@ -460,6 +491,7 @@ local function entity_volume(tool, p)
     layouts()
     local ps = BR.player.of(tool)
     if not ps or bypassing(ps) then return nil end
+    if not places_on_world(p, ENTITY_VOLUME) then return nil end
     local inst = { string.unpack("<i4i4i4", p, ENTITY_VOLUME.instance + 1) }
     local half = { math.max(1, math.abs(inst[1])), math.max(1, math.abs(inst[2])), math.max(1, math.abs(inst[3])) }
     local ok, name = allows(ps, volume_box(p, ENTITY_VOLUME, half), "build")
@@ -471,6 +503,7 @@ local function prefab_volume(tool, p)
     layouts()
     local ps = BR.player.of(tool)
     if not ps or bypassing(ps) then return nil end
+    if not places_on_world(p, PREFAB_VOLUME) then return nil end
     local r = held_prefab_half(ps, tool)
     local box = volume_box(p, PREFAB_VOLUME, { r, r, r })
     -- the anchor itself in a forbidden place needs no wait
@@ -497,6 +530,7 @@ local function on_brick(action, path, name, select)
         if not ps or bypassing(ps) then return nil end
         local h = brick_handle_at(p, at)
         if not BR.brick.valid(h) then return nil end
+        if not on_world_grid(h) then return nil end
         local ok, name = allows(ps, brick_box(h), select and "select" or "build")
         if not ok then return refuse(ps, { action = action, region = name }) end
         return nil
@@ -509,6 +543,7 @@ local function resize(tool, p)
     if not ps or bypassing(ps) then return nil end
     local h = brick_handle_at(p, param(RESIZE, "BrickHandle"))
     if not BR.brick.valid(h) then return nil end
+    if not on_world_grid(h) then return nil end
     local ok, name = allows(ps, brick_box(h), "build")
     if ok then
         local center = ivec_at(p, param(RESIZE, "InNewCenter"))
@@ -526,6 +561,7 @@ local function apply_state(tool, p)
     if not ps or bypassing(ps) then return nil end
     local h = brick_handle_at(p, param(APPLY, "BrickHandle"))
     if not BR.brick.valid(h) then return nil end
+    if not on_world_grid(h) then return nil end
     local b = brick_box(h)
     local ok, name = allows(ps, b, "build")
     if not ok then return refuse(ps, { action = "apply", region = name }) end
@@ -551,6 +587,7 @@ local function add_component(tool, p)
     if not ps or bypassing(ps) then return nil end
     local h = brick_handle_at(p, param(ADD, "BrickHandle"))
     if not BR.brick.valid(h) then return nil end
+    if not on_world_grid(h) then return nil end
     local b = brick_box(h)
     local ok, name = allows(ps, b, "build")
     if not ok then return refuse(ps, { action = "apply", region = name }) end
@@ -730,6 +767,8 @@ end
 ---   owners: player ids or PlayerStates who may build there
 ---   build: "owners" (default: the owners only), "nobody", or "everyone"
 ---   copy: true lets anyone select (and so copy) in it
+---   permission: a BR.perm permission whose holders build there as owners do
+---     (unlike region.bypass, only in this region, and bans still apply)
 ---   ban_assets, ban_components: names not allowed there, for owners too
 ---   message: what a refused player is told
 --- Saved at once. Returns the region's table (as BR.region.get).
@@ -743,12 +782,13 @@ function region.define(name, opts)
     local build = opts.build or "owners"
     assert(build == "owners" or build == "nobody" or build == "everyone", "build is owners, nobody or everyone")
     S.regions[name] = { boxes = boxes, owners = ids(opts.owners), build = build, copy = opts.copy or nil,
+        permission = opts.permission,
         ban_assets = opts.ban_assets, ban_components = opts.ban_components, message = opts.message }
     save()
     return S.regions[name]
 end
 
---- Region `name`'s table ({ boxes, owners, build, copy, ban_assets,
+--- Region `name`'s table ({ boxes, owners, build, copy, permission, ban_assets,
 --- ban_components, message }), or nil. Change it through define and the
 --- functions below, which save.
 function region.get(name) load() return S.regions[name] end
