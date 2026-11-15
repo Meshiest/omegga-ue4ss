@@ -23,11 +23,28 @@ end
 --- EBrickMaterial, for BR.brick.builder's `material` option.
 brick.MATERIAL = { Plastic = 0, Glass = 1, TranslucentPlastic = 2, Glow = 3, Metal = 4, Hologram = 5 }
 
---- A BRLuauBuilder as raw bytes. opts: asset (name), size {x,y,z} (procedural
---- bricks only: half sizes, multiples of 5 for x and y and of 2 for z; anything
---- else is an error), color {r,g,b,a}, material (a BR.brick.MATERIAL name or number,
---- default Plastic), alpha (material alpha, default 5), grid (actor), owner
---- (brick owner index, default BR.brick.PUBLIC), visible, collision.
+-- (brick asset, procedural half size or nil) for a builder's `asset` option: a
+-- name, a brick asset, or a BrickType. A basic brick's type is a subobject of its
+-- asset; a procedural size is a transient BrickTypeGenerated whose generator
+-- names the asset.
+local function builder_asset(a)
+    if a == nil or type(a) == "string" then return BR.brick.asset(a or "PB_DefaultBrick"), nil end
+    if a:IsA(StaticFindObject(SCRIPT .. "BrickTypeGenerated")) then
+        local hs = a.HalfSize
+        return a.SourceGenerator.BrickAsset, { hs.X, hs.Y, hs.Z }
+    end
+    if a:IsA(StaticFindObject(SCRIPT .. "BrickType")) then return a:GetOuter(), nil end
+    return a, nil
+end
+
+--- A BRLuauBuilder as raw bytes. opts: asset (a name, a brick asset, or a BrickType
+--- such as BrickHelpers:GetBrickTypeFromBrickAsset makes, which brings its size),
+--- size {x,y,z} (procedural bricks only: half sizes, multiples of 5 for x and y and
+--- of 2 for z; anything else is an error), color {r,g,b,a}, material (a
+--- BR.brick.MATERIAL name or number, default Plastic), alpha (material alpha,
+--- default 5), grid (a grid actor or its BrickGridComponent), owner (brick owner
+--- index, default BR.brick.PUBLIC), visible, collision. Making one takes about 9 ms:
+--- keep it for bricks of the same kind.
 function brick.builder(opts)
     local lib = cdo("BRLuauBuilderLibrary")
     local self = string.rep("\0", layout(SCRIPT .. "BRLuauBuilderLibrary:SetAsset").Self.size)
@@ -37,16 +54,20 @@ function brick.builder(opts)
         self = BR.raw.call(lib, "BRLuauBuilderLibrary", fn, args).Self
     end
     local ctx = { WorldContextObject = BR.raw.ptr(BR.world.context()) }
-    set("SetAsset", "NewAsset", BR.raw.ptr(BR.brick.asset(opts.asset or "PB_DefaultBrick")))
-    set("SetGrid", "NewGrid", BR.raw.ptr(opts.grid or BR.world.global_grid()))
-    if opts.size then
-        set("SetSize", "NewSize", BR.raw.ivec(table.unpack(opts.size)))
+    local asset, type_size = builder_asset(opts.asset)
+    local size = opts.size or type_size
+    local grid = opts.grid or BR.world.global_grid()
+    if grid:IsA(StaticFindObject(SCRIPT .. "BrickGridComponent")) then grid = grid:GetOwner() end
+    set("SetAsset", "NewAsset", BR.raw.ptr(asset))
+    set("SetGrid", "NewGrid", BR.raw.ptr(grid))
+    if size then
+        set("SetSize", "NewSize", BR.raw.ivec(table.unpack(size)))
         -- the game drops a size it doesn't allow and the brick comes out as the
         -- asset's default (a 2x4 for PB_DefaultBrick), so say so instead
         local got = BR.raw.call(lib, "BRLuauBuilderLibrary", "GetSize", { Self = self })
         if not BR.raw.bool(got.ReturnValue) then
             error(string.format("brick size {%s} was refused: procedural half sizes are multiples of 5 for x and y and of 2 for z, at most 4000",
-                table.concat(opts.size, ", ")), 2)
+                table.concat(size, ", ")), 2)
         end
     end
     local c = opts.color or { 255, 255, 255, 255 }
@@ -116,6 +137,14 @@ end
 function brick.visible(handle) return BR.raw.bool(brick_call("IsVisible", handle).ReturnValue) end
 
 function brick.id(handle) return brick_call("GetId", handle).ReturnValue end
+
+--- The handle of the brick with id `id` (BR.brick.id, or what tx.place returned
+--- once the transaction has run), or nil when there is no such brick, as for a
+--- placement the transaction refused.
+function brick.handle(id)
+    local r = BR.raw.call(cdo("BRLuauBrickLibrary"), "BRLuauBrickLibrary", "GetIdBrick", { Self = id })
+    return BR.raw.bool(r.ReturnValue) and r.OutBrick or nil
+end
 
 --- Who a brick owner index stands for: { index, id (account id, 8-4-4-4-12
 --- hex), name, display_name }, from the game's owner table, or nil for an index

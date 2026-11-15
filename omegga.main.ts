@@ -131,15 +131,11 @@ export default class Ue4ssPlugin {
     }
   }
 
-  /**
-   * `mods/` of every other enabled plugin that contains UE4SS mods. Sandboxed
-   * (node_safe) plugins are skipped: UE4SS Lua has unrestricted io/os access and
-   * C++ mods are native code, either of which would escape the sandbox.
-   */
+  /** `mods/` of every other enabled plugin, of any format, that contains UE4SS mods. */
   pluginModDirs(): string[] {
     const own = fs.realpathSync(PLUGIN_DIR);
     return (this.omegga.pluginLoader?.plugins ?? [])
-      .filter(p => p.isEnabled() && p.getFormat() !== 'node_safe')
+      .filter(p => p.isEnabled())
       .map(p => path.join(p.path, 'mods'))
       .filter(
         dir => hasUe4ssMods(dir) && fs.realpathSync(path.dirname(dir)) !== own,

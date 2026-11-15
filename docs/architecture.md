@@ -48,7 +48,7 @@ doesn't relaunch the game):
    a generated `UE4SS-settings.ini`. Files are replaced by write-and-rename, never in place: the
    running game maps `libUE4SS.so`, and a plugin reload must not change it underneath.
 3. **Mod folders** in the settings: `data/Mods` (the server owner's), `plugins/ue4ss/mods` (the
-   bridge) and the `mods/` of every enabled, non-sandboxed plugin that contains UE4SS mods.
+   bridge) and the `mods/` of every enabled plugin, safe or unsafe, that contains UE4SS mods.
 4. **Shared Lua libraries** to `data/Mods/shared/omegga/`, so any mod can
    `require("omegga")` and `require("omegga.brickadia")`.
 5. **Signatures and vtables** verified against the exact binary omegga will launch; see

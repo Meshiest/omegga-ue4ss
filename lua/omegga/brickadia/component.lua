@@ -115,7 +115,9 @@ end
 --   3  Pop                       leave it
 --   28..42 SetLeafValue          set the current field; the tag is 27 + the value's
 --                                type (bool 1, int8..uint64 2..9, float 10, double 11,
---                                WireString 15) and must match the field exactly
+--                                FName 13, object 14, WireString 15) and must match the
+--                                field, except that an object or class field also takes
+--                                an FName, the asset's name, and the game resolves it
 -- The executor refuses a type mismatch (logged under LogBRPropertyChange) and
 -- leaves the field unchanged.
 
@@ -134,6 +136,7 @@ local LEAF = {
     WireString = { 42, wirestring },
     -- the component enums are all uint8-backed; written as their byte value
     EnumProperty = { 30, function(v) return string.pack("<I1", math.tointeger(v)) end },
+    NameProperty = { 40, function(v) return string.pack("<I8", __fname(tostring(v))) end },
     -- a weak object reference, { object index, serial }: the payload BRPropertyValue
     -- uses for objects, built by the engine so the serial is right
     WeakObjectProperty = { 41, function(v)
@@ -186,6 +189,11 @@ local function field_tokens(struct, path, value)
         tokens[#tokens + 1] = token(2, string.pack("<I8", __fname(seg)))
         depth = depth + 1
         local leaf = LEAF[kind] or (kind == "Struct<WireString>" and LEAF.WireString)
+        -- asset references: by name, as the game's own edit sends them (the only form a
+        -- class field accepts), or an object field given the UObject itself
+        if kind == "ObjectProperty" or kind == "ClassProperty" then
+            leaf = type(value) == "string" and LEAF.NameProperty or (kind == "ObjectProperty" and LEAF.WeakObjectProperty) or nil
+        end
         if i == #segments then
             if not leaf then error(string.format("%s is a %s, which BR.component.set can't write", path, kind), 3) end
             tokens[#tokens + 1] = token(leaf[1], leaf[2](value))
@@ -198,10 +206,31 @@ local function field_tokens(struct, path, value)
     return tokens
 end
 
+--- Which way a port of a brick's component goes, as the game validates wires for
+--- that placed brick: "input", "output", "both", or nil when `port` is no wire port.
+--- Covers struct sub-ports ("ExitOffset.X"), which BR.component.ports doesn't list.
+function component.port_direction(handle, ctype, port)
+    local c = BR.component.handle(handle, ctype)
+    if not c then error("the brick has no such component", 2) end
+    local registry = BR.world.registry()
+    -- BCSWirePortRef: { BCSComponentHandle, FName PortName }
+    local ref = c .. string.pack("<I8", __fname(port))
+    local function valid(as_output)
+        return BR.raw.bool(BR.raw.call(registry, "BRRegistry", "IsComponentWirePortRefValid", {
+            PortRef = ref, bAsOutput = string.pack("B", as_output and 1 or 0),
+        }).ReturnValue)
+    end
+    local input, output = valid(false), valid(true)
+    if input and output then return "both" end
+    return input and "input" or output and "output" or nil
+end
+
 --- Set fields of a brick's component: `values` maps field paths to values,
 --- `{ GunSkill = 0.5, bActiveBot = false, BotName = "Bob", ["MoveTarget.X"] = 100 }`;
 --- a struct field can also take a table of its fields (`Color = { R = 20, G = 20 }`),
---- and an enum field takes its numeric value.
+--- an enum field takes its numeric value, a name field a string, and an object or
+--- class field (an asset reference gate's Asset) the asset's name or, for an object
+--- field, the UObject.
 --- Field types come from reflection, so numbers are converted to the field's own
 --- type (an integer field needs an integer). Raises a Lua error for an unknown
 --- field or a type it can't write; applies directly, without a transaction or
@@ -248,6 +277,10 @@ local function read_field(addr, prop, depth)
     if kind == "BoolProperty" then return string.byte(__peek(at, 1)) ~= 0 end
     local fmt = SCALAR_READ[kind]
     if fmt then return (string.unpack(fmt, __peek(at, 8))) end
+    if kind == "NameProperty" then
+        local index, number = string.unpack("<I4I4", __peek(at, 8))
+        return FName(index, number):ToString()
+    end
     if kind == "Struct<WireString>" then return read_wirestring(at) end
     if kind == "Struct<WireValue>" then return read_wirevalue(at) end
     if inner and depth < 3 then
@@ -277,9 +310,33 @@ function component.address(handle, ctype)
     return c and __component_data(c)
 end
 
+--- The address of field `path` ("Asset", "MoveTarget.X") of a brick's component,
+--- and its type as BR.component.fields names it; nil when the brick has no such
+--- component. For fields BR.component.get doesn't decode: an object or class
+--- field holds a UObject pointer, 0 when empty, which this leaves unread because
+--- wrapping a pointer that isn't a live object crashes the server.
+function component.field(handle, ctype, path)
+    local t = type(ctype) == "string" and BR.component.type(ctype) or ctype
+    local addr = BR.component.address(handle, t)
+    if not addr then return nil end
+    local struct = BR.component.struct(t)
+    local segments = {}
+    for seg in path:gmatch("[^%.]+") do segments[#segments + 1] = seg end
+    for i, seg in ipairs(segments) do
+        local prop = find_field(struct, seg)
+        if not prop then error(string.format("no field %s in %s", seg, struct:GetFName():ToString()), 2) end
+        local kind, inner = field_kind(prop)
+        addr = addr + prop:GetOffset_Internal()
+        if i == #segments then return addr, kind end
+        if not inner then error(string.format("%s in %s is not a struct", seg, path), 2) end
+        struct = inner
+    end
+end
+
 --- One field of a brick's component ("GunSkill", "MoveTarget.X"): booleans,
---- numbers, strings (WireString), wire values and structs (as tables). Fields of
---- other types (object references, arrays) read as nil.
+--- numbers, strings (WireString and name fields), wire values and structs (as
+--- tables). Fields of other types (object references, arrays) read as nil; see
+--- BR.component.field for those.
 function component.get(handle, ctype, path)
     local t = type(ctype) == "string" and BR.component.type(ctype) or ctype
     local addr = BR.component.address(handle, t)

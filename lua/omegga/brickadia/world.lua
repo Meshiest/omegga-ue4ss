@@ -58,6 +58,36 @@ end
 
 --- The projectiles BR.world.spawn_projectile takes, by name ("RocketLauncher",
 --- "Pistol", "SeekerMissile", ...), sorted.
+-- FindFirstOf scans the object array, too slow to repeat per call; the registry
+-- is replaced on a world load, which leaves the old one dead
+local registry_cache
+
+--- The world's BRRegistry (wires, the world grid's BrickGridComponent as
+--- CachedGlobalBrickGrid).
+function world.registry()
+    if not I.alive(registry_cache) then
+        registry_cache = FindFirstOf("BRRegistry")
+        valid(registry_cache, "the BRRegistry")
+    end
+    return registry_cache
+end
+
+--- The names of every primary asset of `type` the game knows ("BrickAudioDescriptor",
+--- "BRItemBase", ...), loaded or not, in the asset manager's order.
+function world.primary_assets(type)
+    local r = BR.raw.call(StaticFindObject("/Script/Engine.Default__KismetSystemLibrary"), "Engine.KismetSystemLibrary",
+        "GetPrimaryAssetIdList", { PrimaryAssetType = string.pack("<I8", __fname(type)) })
+    -- TArray<FPrimaryAssetId>, each { FName PrimaryAssetType, FName PrimaryAssetName }
+    local data, num = string.unpack("<I8i4", r.OutPrimaryAssetIdList)
+    local names = {}
+    for i = 0, num - 1 do
+        local index, number = string.unpack("<I4I4", __peek(data + i * 16 + 8, 8))
+        names[#names + 1] = FName(index, number):ToString()
+    end
+    if data ~= 0 then __game_free(data) end
+    return names
+end
+
 function world.projectile_types()
     local out = {}
     for name in pairs(projectiles()) do out[#out + 1] = name end

@@ -135,6 +135,8 @@ already in `UE4SS.log` when the plugin starts are not repeated.
 | `BR.world.ready()` | true once the global brick grid exists (map loaded) |
 | `BR.world.context()` | the game `UWorld`, which `WorldContextObject` params need |
 | `BR.world.global_grid()` | the `GlobalBrickGridActor` |
+| `BR.world.registry()` | the world's `BRRegistry` (its `CachedGlobalBrickGrid` is the world grid's `BrickGridComponent`) |
+| `BR.world.primary_assets(type)` | names of every primary asset of a type the game knows, loaded or not (`"BrickAudioDescriptor"`, `"BRItemBase"`) |
 | `BR.world.game_mode()` | the `BRGameModeBase` |
 | `BR.world.spawn(class)` | spawn an actor of a UClass at the world origin; returns it |
 | `BR.world.spawn_projectile(class, from, dir, opts?)` | fire a weapon's projectile (`"RocketLauncher"`, a name from `BR.world.projectile_types()`, or a class) from `{x, y, z}` along `dir`; it flies, explodes and damages as the weapon's would. `opts`: `speed`, `damage` (multipliers), `scale`, `instigator` (PlayerState the damage counts for). Spawned as a replicated actor, as the Projectile Spawner brick's are; returns it |
@@ -146,13 +148,14 @@ These raise a Lua error instead of returning an invalid object.
 | | |
 |--|--|
 | `BR.brick.asset(name)` | a brick asset by name: `"PB_DefaultBrick"`, `"B_Bot_Spawn_Point"`, `"B_1x1_Gate_Expr_LogicalAND"` |
-| `BR.brick.builder(opts)` | builder bytes. `opts`: `asset`, `size = {x, y, z}` (procedural bricks; half-extents in brick units, multiples of 5 for x and y and of 2 for z, at most 4000; the game turns any other size into the asset's default, a 2x4, so the builder raises an error instead), `color = {r, g, b, a}`, `material` (a `BR.brick.MATERIAL` name such as `"Glass"`, or its number; default `"Plastic"`), `alpha` (default 5), `grid`, `owner` (brick owner index), `visible = false`, `collision = false` |
+| `BR.brick.builder(opts)` | builder bytes. `opts`: `asset` (a name, a brick asset, or a `BrickType`, which brings its procedural size), `size = {x, y, z}` (procedural bricks; half-extents in brick units, multiples of 5 for x and y and of 2 for z, at most 4000; the game turns any other size into the asset's default, a 2x4, so the builder raises an error instead), `color = {r, g, b, a}`, `material` (a `BR.brick.MATERIAL` name such as `"Glass"`, or its number; default `"Plastic"`), `alpha` (default 5), `grid` (a grid actor or its `BrickGridComponent`), `owner` (brick owner index), `visible = false`, `collision = false` |
 | `BR.brick.MATERIAL` | `Plastic`, `Glass`, `TranslucentPlastic`, `Glow`, `Metal`, `Hologram` (`EBrickMaterial`) |
 | `BR.brick.place(builder, x, y, z, orientation?)` | handle, or nil when refused. Immediate, no trust check, no undo. `orientation` defaults to `BR.brick.Z_UP` |
 | `BR.brick.info(handle)` | `{ valid, asset, position = {x, y, z} }`, or `{ valid = false }` |
 | `BR.brick.owner(handle)` / `BR.brick.owner_info(index)` | who owns a brick (or an owner index stands for): `{ index, id, name, display_name }` from the game's owner table, which keeps players who have left; index 0 is the shared "PUBLIC" owner |
 | `BR.brick.valid(handle)` | whether the handle names a live brick |
 | `BR.brick.id(handle)` | persistent id bytes, for transactions |
+| `BR.brick.handle(id)` | the handle of the brick with that id (one `tx.place` returned, after the transaction ran), or nil, as for a placement the transaction refused |
 | `BR.brick.visible(handle)` | bool |
 | `BR.brick.count(grid?)` | number of bricks |
 | `BR.brick.COLLISION` | `EBrickCollisionChannels` bits: `Player`, `Player1`, `Player2`, `Player3`, `Weapon`, `Interaction`, `Physics`. A brick blocks what it has the bit for; `BR.brick.ALL_COLLISION` is all of them |
@@ -259,6 +262,7 @@ transaction got `appear "placed"`, and deleting it got `remove`.
 | `BR.component.ports(type)` | `{ inputs = {...}, outputs = {...} }`: the port FNames refs use |
 | `BR.component.input_port(type, port)` / `BR.component.output_port(type, port)` | port ref bytes |
 | `BR.component.port_name(port)` | a port ref's name back |
+| `BR.component.port_direction(handle, type, port)` | `"input"`, `"output"`, `"both"`, or nil when the field is no wire port, as the game validates wires for that placed brick; covers struct sub-ports such as `"ExitOffset.X"`, which `ports` doesn't list |
 | `BR.component.handle(handle, type)` | the brick's component of that type as its 8-byte component handle (the id wires address), or nil |
 | `BR.wire.bool(v)`, `BR.wire.int(v)`, `BR.wire.double(v)`, `BR.wire.string(text)` | wire value bytes |
 | `BR.player.server()` | the PlayerState Lua acts as: transactions, admin gates, its own bricks ([why](brickadia-internals.md#transactions-and-trust)). Not in `BR.player.list()` |
@@ -377,6 +381,7 @@ button labels. Written with the engine's own property changelists
 | `BR.component.fields(type)` | `{ { name, type } }` for every field, inherited ones included (Interact's `PromptCustomLabel` comes from its base) |
 | `BR.component.struct(type)` | the component's data struct (a UScriptStruct) |
 | `BR.component.address(handle, type)` | where the data lives, for reading it raw |
+| `BR.component.field(handle, type, path)` | the address of one field and its type; an object or class field holds a UObject pointer (0 when empty), left unread because wrapping one that isn't a live object crashes the server |
 | `BR.wire.read(address)` | the wire value at an address, decoded as reads are below |
 
 ```lua
@@ -397,9 +402,11 @@ Each value is converted to the field's own type, read from reflection:
 | `Int8Property` ... `UInt64Property`, `ByteProperty` | integer |
 | `FloatProperty`, `DoubleProperty` | number |
 | `Struct<WireString>` (names, labels, messages) | string |
+| `NameProperty` | string |
+| `ObjectProperty`, `ClassProperty` (an asset reference gate's `Asset`, a property gate's `ComponentType`) | the asset's name, which the game resolves as in its own edits (`"Weapon_APCarbine"`, `"BA_AMB_Abstract_Subtle_Interference"`); an object field also takes the UObject |
 | a struct (`Struct<Vector>`, ...) | write its fields with a dotted path |
 
-Anything else (arrays, maps, enums, object references) raises an error naming the field and
+Anything else (arrays, maps, soft references) raises an error naming the field and
 its type, as does an unknown field. The write applies at once, without a transaction or trust
 check (like `BR.brick.place`), and works on a brick's built-in components as well as attached ones.
 A mismatch the engine itself refuses is logged under `LogBRPropertyChange` and leaves the

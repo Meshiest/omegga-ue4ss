@@ -25,7 +25,7 @@ again). `RUNTIME_BASE_URL` points `setup.sh` at another host. You can also build
 
 Put mods in `data/Mods/`, the same as any UE4SS install (`mods.txt`, or an `enabled.txt` in
 each mod). Other omegga plugins can ship UE4SS mods in their own `mods/` folder and they get
-loaded too, as long as the plugin is enabled and not sandboxed.
+loaded too, from any enabled plugin, safe or unsafe.
 
 ## What happens on start
 

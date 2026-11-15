@@ -734,7 +734,8 @@ namespace
 
     // The game's get-or-create for Self's transaction: the first direct call in
     // RecordSetEntityColor's native code whose target starts with its prologue
-    // and its check of Self+0x28.
+    // and its check of Self+0x28. Some builds inline the record body into the
+    // exec thunk and some call it, so the calls one level down are searched too.
     auto find_tx_get() -> uintptr_t
     {
         static uintptr_t address = []() -> uintptr_t {
@@ -745,15 +746,28 @@ namespace
             if (!code || !text) return 0;
             static constexpr uint8_t prologue[] = {0x41, 0x56, 0x53, 0x48, 0x81, 0xec};
             static constexpr uint8_t check[] = {0x80, 0x7f, 0x28, 0x00};
-            for (size_t i = 0; i < 0x400; ++i)
-            {
-                if (code[i] != 0xe8) continue;
-                auto target = call_target(code + i);
-                if (target < reinterpret_cast<uintptr_t>(text) || target + 16 > reinterpret_cast<uintptr_t>(text) + size) continue;
-                auto* q = reinterpret_cast<const uint8_t*>(target);
-                if (std::memcmp(q, prologue, sizeof prologue) == 0 && std::memcmp(q + 10, check, sizeof check) == 0) return target;
-            }
-            return 0;
+            constexpr size_t scan = 0x400;
+            auto start = reinterpret_cast<uintptr_t>(text);
+            // an e8 byte inside another instruction decodes to a junk target
+            auto in_text = [&](uintptr_t a, size_t n) { return a >= start && a + n <= start + size; };
+            auto search = [&](auto& self, uintptr_t from, int depth) -> uintptr_t {
+                if (!in_text(from, scan)) return 0;
+                auto* p = reinterpret_cast<const uint8_t*>(from);
+                for (size_t i = 0; i < scan; ++i)
+                {
+                    if (p[i] != 0xe8) continue;
+                    auto target = call_target(p + i);
+                    if (!in_text(target, 16)) continue;
+                    auto* q = reinterpret_cast<const uint8_t*>(target);
+                    if (std::memcmp(q, prologue, sizeof prologue) == 0 && std::memcmp(q + 10, check, sizeof check) == 0) return target;
+                }
+                if (depth == 0) return 0;
+                for (size_t i = 0; i < scan; ++i)
+                    if (p[i] == 0xe8)
+                        if (auto found = self(self, call_target(p + i), depth - 1)) return found;
+                return 0;
+            };
+            return search(search, reinterpret_cast<uintptr_t>(code), 1);
         }();
         return address;
     }
