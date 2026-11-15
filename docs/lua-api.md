@@ -1419,7 +1419,8 @@ BR.world.raycast({ 0, 8400, 800 }, { 0, 0, -1 }).entity:GetClass()   -- BP_Entit
 | `BR.server.console(command)` | run a console command (`KismetSystemLibrary:ExecuteConsoleCommand`), e.g. `"br.Chat.Broadcast hi"` |
 | `BR.server.log_tail(n, pattern?)` | last `n` lines of `Saved/Logs/Brickadia.log` containing `pattern` (plain text) |
 | `BR.server.watchdog(ms?)` | the callback time budget in ms ([watchdog](#the-watchdog)); sets it when given, returns the old one |
-| `BR.server.build()` | the game build (`"Release-EA3-CL-16507"`), from the game log |
+| `BR.server.build()` | the game build (`"Release-EA3-CL-16507"`): branch and changelist |
+| `BR.server.version()` | the changelist as a number (`16507`), what omegga calls the version |
 | `BR.server.roles()` | role names: owner, default, then custom (`Owner, Default, Moderator, Admin`) |
 | `BR.world.round()` / `BR.world.session_running()` | the current round (from 1) / whether the session runs |
 | `BR.world.next_round(immediate?)` | end this round and start the next |

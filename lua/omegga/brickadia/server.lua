@@ -44,20 +44,14 @@ function server.world()
     return name
 end
 
---- The game build ("Release-EA3-CL-16507"), from the line the game logs at
---- startup, or nil if the log doesn't have it.
+--- The game build ("Release-EA3-CL-16507"): its branch and changelist.
 function server.build()
-    local saved = StaticFindObject("/Script/Engine.Default__KismetSystemLibrary"):GetProjectSavedDirectory():ToString()
-    local f = io.open(saved .. "Logs/Brickadia.log", "rb")
-    if not f then return nil end
-    for line in f:lines() do
-        local build = line:match("^LogInit: Build: (%S+)")
-        if build then
-            f:close()
-            return build
-        end
-    end
-    f:close()
+    return StaticFindObject("/Script/Engine.Default__KismetSystemLibrary"):GetBuildVersion():ToString()
+end
+
+--- The game's changelist (16507), what omegga calls the version.
+function server.version()
+    return tonumber(server.build():match("CL%-(%d+)"))
 end
 
 --- The watchdog's budget in milliseconds: a mod callback the bridge runs
